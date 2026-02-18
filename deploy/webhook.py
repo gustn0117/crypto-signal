@@ -1,4 +1,4 @@
-"""GitHub Webhook → 자동 배포 서비스 (v2 - 안정화)"""
+"""GitHub Webhook → 자동 배포 서비스 (v3 - 컨테이너 충돌 해결)"""
 import http.server
 import subprocess
 import hashlib
@@ -8,9 +8,8 @@ import threading
 import time
 
 SECRET = "coin-deploy-secret-2026"
-PROJECT_NAME = "crypto-signal"  # 고정 프로젝트명 (수동/자동 동일)
+PROJECT_NAME = "crypto-signal"
 
-# 배포 잠금 (동시 배포 방지)
 _deploy_lock = threading.Lock()
 _last_deploy_status = {"running": False, "last_result": None, "last_time": None}
 
@@ -26,9 +25,9 @@ def run_deploy():
         print("[deploy] === 배포 시작 ===", flush=True)
 
         # 1) git pull
-        print("[deploy] git pull...", flush=True)
+        print("[deploy] step 1/4: git pull", flush=True)
         r = subprocess.run(
-            ["git", "pull"], cwd="/repo",
+            ["git", "pull", "--ff-only"], cwd="/repo",
             capture_output=True, text=True, timeout=60,
         )
         print(f"[deploy] git pull: {r.stdout.strip()}", flush=True)
@@ -37,20 +36,29 @@ def run_deploy():
             _last_deploy_status["last_result"] = "FAILED (git pull)"
             return
 
-        # 2) docker compose down (기존 컨테이너 정리)
-        print("[deploy] docker compose down...", flush=True)
+        # 2) 기존 컨테이너 강제 제거 (이름 충돌 방지)
+        print("[deploy] step 2/4: 기존 컨테이너 제거", flush=True)
+        for name in ["coin-backend", "coin-frontend"]:
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                capture_output=True, text=True, timeout=30,
+            )
+
+        # 3) docker compose down (네트워크 등 정리)
+        print("[deploy] step 3/4: docker compose down", flush=True)
         subprocess.run(
             ["docker", "compose", "-p", PROJECT_NAME, "down", "--timeout", "10"],
             cwd="/repo", capture_output=True, text=True, timeout=120,
         )
 
-        # 3) docker compose up --build
-        print("[deploy] docker compose up -d --build...", flush=True)
+        # 4) docker compose up --build
+        print("[deploy] step 4/4: docker compose up -d --build", flush=True)
         r = subprocess.run(
             ["docker", "compose", "-p", PROJECT_NAME, "up", "-d", "--build"],
             cwd="/repo", capture_output=True, text=True, timeout=600,
         )
-        print(f"[deploy] stdout: {r.stdout}", flush=True)
+        if r.stdout:
+            print(f"[deploy] stdout: {r.stdout}", flush=True)
         if r.stderr:
             print(f"[deploy] stderr: {r.stderr}", flush=True)
 
@@ -75,12 +83,16 @@ def run_deploy():
 
 class DeployHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        """배포 상태 확인용"""
         if self.path == "/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(_last_deploy_status).encode())
+            return
+        if self.path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
             return
         self.send_response(404)
         self.end_headers()
@@ -113,7 +125,6 @@ class DeployHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Ignored: not a push event")
             return
 
-        # 배포 스레드 시작
         if _last_deploy_status["running"]:
             self.send_response(200)
             self.end_headers()
@@ -131,7 +142,6 @@ class DeployHandler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    # stdout 버퍼링 끄기
     print(f"Webhook server running on :9000 (project={PROJECT_NAME})", flush=True)
     server = http.server.HTTPServer(("0.0.0.0", 9000), DeployHandler)
     server.serve_forever()
