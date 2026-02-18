@@ -1,14 +1,90 @@
-"""GitHub Webhook → 자동 배포 서비스"""
+"""GitHub Webhook → 자동 배포 서비스 (v2 - 안정화)"""
 import http.server
 import subprocess
 import hashlib
 import hmac
 import json
+import threading
+import time
 
 SECRET = "coin-deploy-secret-2026"
+PROJECT_NAME = "crypto-signal"  # 고정 프로젝트명 (수동/자동 동일)
+
+# 배포 잠금 (동시 배포 방지)
+_deploy_lock = threading.Lock()
+_last_deploy_status = {"running": False, "last_result": None, "last_time": None}
+
+
+def run_deploy():
+    """실제 배포 실행 (별도 스레드)"""
+    if not _deploy_lock.acquire(blocking=False):
+        print("[deploy] 이미 배포 진행 중 - 스킵", flush=True)
+        return
+
+    _last_deploy_status["running"] = True
+    try:
+        print("[deploy] === 배포 시작 ===", flush=True)
+
+        # 1) git pull
+        print("[deploy] git pull...", flush=True)
+        r = subprocess.run(
+            ["git", "pull"], cwd="/repo",
+            capture_output=True, text=True, timeout=60,
+        )
+        print(f"[deploy] git pull: {r.stdout.strip()}", flush=True)
+        if r.returncode != 0:
+            print(f"[deploy] git pull 실패: {r.stderr}", flush=True)
+            _last_deploy_status["last_result"] = "FAILED (git pull)"
+            return
+
+        # 2) docker compose down (기존 컨테이너 정리)
+        print("[deploy] docker compose down...", flush=True)
+        subprocess.run(
+            ["docker", "compose", "-p", PROJECT_NAME, "down", "--timeout", "10"],
+            cwd="/repo", capture_output=True, text=True, timeout=120,
+        )
+
+        # 3) docker compose up --build
+        print("[deploy] docker compose up -d --build...", flush=True)
+        r = subprocess.run(
+            ["docker", "compose", "-p", PROJECT_NAME, "up", "-d", "--build"],
+            cwd="/repo", capture_output=True, text=True, timeout=600,
+        )
+        print(f"[deploy] stdout: {r.stdout}", flush=True)
+        if r.stderr:
+            print(f"[deploy] stderr: {r.stderr}", flush=True)
+
+        if r.returncode == 0:
+            print("[deploy] === 배포 성공 ===", flush=True)
+            _last_deploy_status["last_result"] = "SUCCESS"
+        else:
+            print(f"[deploy] === 배포 실패 (exit={r.returncode}) ===", flush=True)
+            _last_deploy_status["last_result"] = f"FAILED (exit={r.returncode})"
+
+    except subprocess.TimeoutExpired:
+        print("[deploy] === 배포 타임아웃 ===", flush=True)
+        _last_deploy_status["last_result"] = "TIMEOUT"
+    except Exception as e:
+        print(f"[deploy] === 배포 에러: {e} ===", flush=True)
+        _last_deploy_status["last_result"] = f"ERROR: {e}"
+    finally:
+        _last_deploy_status["running"] = False
+        _last_deploy_status["last_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _deploy_lock.release()
 
 
 class DeployHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        """배포 상태 확인용"""
+        if self.path == "/status":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(_last_deploy_status).encode())
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def do_POST(self):
         if self.path != "/deploy":
             self.send_response(404)
@@ -37,25 +113,25 @@ class DeployHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Ignored: not a push event")
             return
 
-        # 배포 실행 (비동기) - 기존 컨테이너 강제 제거 후 재생성
-        subprocess.Popen(
-            ["sh", "-c",
-             "cd /repo && git pull"
-             " && docker stop coin-backend coin-frontend 2>/dev/null"
-             " ; docker rm coin-backend coin-frontend 2>/dev/null"
-             " ; docker compose up -d --build"
-             ],
-        )
+        # 배포 스레드 시작
+        if _last_deploy_status["running"]:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Deploy already running")
+            return
+
+        threading.Thread(target=run_deploy, daemon=True).start()
 
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Deploy triggered")
 
     def log_message(self, fmt, *args):
-        print(f"[webhook] {args[0]}")
+        print(f"[webhook] {args[0]}", flush=True)
 
 
 if __name__ == "__main__":
+    # stdout 버퍼링 끄기
+    print(f"Webhook server running on :9000 (project={PROJECT_NAME})", flush=True)
     server = http.server.HTTPServer(("0.0.0.0", 9000), DeployHandler)
-    print("Webhook server running on :9000")
     server.serve_forever()
