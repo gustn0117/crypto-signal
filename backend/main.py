@@ -147,19 +147,16 @@ async def push_subscription_updates():
         try:
             symbol = sub["symbol"]
             timeframe = sub["timeframe"]
-            collector = DataCollector(async_client, candle_repo)
-            await collector.collect(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
             df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
 
-            # 상위 TF 데이터 수집
+            # 상위 TF 데이터 (DB에서 직접 읽기)
             higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
             higher_tf_df = None
             if higher_tf != timeframe:
                 try:
-                    await collector.collect(symbol, higher_tf)
                     higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
                 except Exception as e:
-                    logger.warning("상위TF(%s) 수집 실패 [%s]: %s", higher_tf, symbol, e)
+                    logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
             signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
             signal_data = signal.to_dict()
@@ -193,8 +190,6 @@ async def push_subscription_updates():
 
 async def _auto_generate_prediction(symbol: str, timeframe: str):
     """시그널 CONFIRMED 시 자동 예측 생성."""
-    collector = DataCollector(async_client, candle_repo)
-    await collector.collect(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
     df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
 
     if len(df) < 20:
@@ -205,7 +200,6 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
     higher_tf_df = None
     if higher_tf != timeframe:
         try:
-            await collector.collect(symbol, higher_tf)
             higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
         except Exception:
             pass
@@ -732,22 +726,19 @@ async def analyze_symbol(
     symbol = _normalize_symbol(symbol)
 
     try:
-        collector = DataCollector(async_client, candle_repo)
-        await collector.collect(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
         df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
 
         if len(df) < 20:
             raise HTTPException(status_code=400, detail=f"데이터 부족: {len(df)}개 캔들 (최소 20개 필요)")
 
-        # 상위 TF 데이터
+        # 상위 TF 데이터 (DB에서 직접 읽기)
         higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
         higher_tf_df = None
         if higher_tf != timeframe:
             try:
-                await collector.collect(symbol, higher_tf)
                 higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
             except Exception as e:
-                logger.warning("상위TF(%s) 수집 실패 [%s]: %s", higher_tf, symbol, e)
+                logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
         signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
         result = signal.to_dict()
@@ -949,8 +940,6 @@ async def create_prediction(
     symbol = _normalize_symbol(symbol)
 
     try:
-        collector = DataCollector(async_client, candle_repo)
-        await collector.collect(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
         df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
 
         if len(df) < 20:
@@ -960,7 +949,6 @@ async def create_prediction(
         higher_tf_df = None
         if higher_tf != timeframe:
             try:
-                await collector.collect(symbol, higher_tf)
                 higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
             except Exception:
                 pass
@@ -1199,15 +1187,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info("WS 구독: %s/%s", symbol, timeframe)
 
                 try:
-                    collector = DataCollector(async_client, candle_repo)
-                    await collector.collect(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
                     df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
 
                     higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
                     higher_tf_df = None
                     if higher_tf != timeframe:
                         try:
-                            await collector.collect(symbol, higher_tf)
                             higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
                         except Exception:
                             pass
@@ -1249,10 +1234,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 timeframe = message.get("timeframe", DEFAULT_TIMEFRAME)
 
                 try:
-                    collector = DataCollector(async_client, candle_repo)
                     symbol = _normalize_symbol(symbol)
-                    await collector.collect(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
-
                     df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
                     signal = engine.analyze(df, symbol, timeframe)
                     await websocket.send_text(json.dumps({
