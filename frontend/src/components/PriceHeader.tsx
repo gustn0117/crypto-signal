@@ -1,6 +1,7 @@
 "use client";
 
 import { Signal, Ticker } from "@/lib/api";
+import { formatPrice, formatVolume } from "@/lib/utils";
 import SignalBadge from "./SignalBadge";
 
 interface PriceHeaderProps {
@@ -8,31 +9,45 @@ interface PriceHeaderProps {
   ticker: Ticker | null;
   signal: Signal | null;
   lastRefresh: string;
+  loading?: boolean;
 }
 
-function formatPrice(price: number): string {
-  if (price >= 1000) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (price >= 1) return price.toFixed(4);
-  return price.toFixed(6);
-}
-
-function formatVolume(vol: number): string {
-  if (vol >= 1_000_000_000) return `$${(vol / 1_000_000_000).toFixed(2)}B`;
-  if (vol >= 1_000_000) return `$${(vol / 1_000_000).toFixed(2)}M`;
-  if (vol >= 1_000) return `$${(vol / 1_000).toFixed(2)}K`;
-  return `$${vol.toFixed(0)}`;
-}
-
-export default function PriceHeader({ symbol, ticker, signal, lastRefresh }: PriceHeaderProps) {
+export default function PriceHeader({ symbol, ticker, signal, lastRefresh, loading }: PriceHeaderProps) {
   const displaySymbol = symbol.includes("/") ? symbol : symbol.replace("USDT", "/USDT");
   const price = ticker?.price || signal?.current_price || 0;
   const change = ticker?.change_24h || 0;
   const isPositive = change >= 0;
 
+  if (loading) {
+    return (
+      <div className="cd-card animate-pulse">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="flex items-center gap-5">
+            <div>
+              <div className="h-6 w-32 bg-card-active rounded mb-2" />
+              <div className="flex items-center gap-3">
+                <div className="h-8 w-40 bg-card-active rounded" />
+                <div className="h-6 w-16 bg-card-active rounded" />
+              </div>
+            </div>
+            <div className="h-8 w-24 bg-card-active rounded-full" />
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 lg:gap-6">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i}>
+                <div className="h-3 w-16 bg-card-active rounded mb-1" />
+                <div className="h-5 w-20 bg-card-active rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="cd-card">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-        {/* 왼쪽: 심볼 + 가격 */}
         <div className="flex items-center gap-5">
           <div>
             <h2 className="text-xl font-bold text-heading mb-1">{displaySymbol}</h2>
@@ -55,7 +70,6 @@ export default function PriceHeader({ symbol, ticker, signal, lastRefresh }: Pri
           )}
         </div>
 
-        {/* 오른쪽: 24h 통계 */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 lg:gap-6">
           <StatItem label="24h 고가" value={`$${formatPrice(ticker?.high_24h || 0)}`} />
           <StatItem label="24h 저가" value={`$${formatPrice(ticker?.low_24h || 0)}`} />
@@ -82,7 +96,7 @@ function StatItem({ label, value, color }: { label: string; value: string; color
   return (
     <div>
       <div className="text-xs text-muted mb-0.5">{label}</div>
-      <div className="text-sm font-semibold font-mono" style={{ color: color || "#ffffff" }}>
+      <div className="text-sm font-semibold font-mono" style={{ color: color || "var(--text-heading)" }}>
         {value}
       </div>
     </div>

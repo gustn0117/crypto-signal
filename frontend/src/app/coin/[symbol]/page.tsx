@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useCoinDetail } from "@/hooks/useCoinDetail";
 import { useWS } from "@/components/ClientLayout";
+import { formatPrice, timeAgo } from "@/lib/utils";
 import CandleChart from "@/components/CandleChart";
 import CoinSearch from "@/components/CoinSearch";
 import PriceHeader from "@/components/PriceHeader";
@@ -16,6 +17,7 @@ import TradeParamsCard from "@/components/TradeParamsCard";
 import MTFBadge from "@/components/MTFBadge";
 import PredictionHistoryPanel from "@/components/PredictionHistoryPanel";
 import PredictionInfoCard from "@/components/PredictionInfoCard";
+import ErrorState from "@/components/ErrorState";
 import { ChartSkeleton } from "@/components/Skeleton";
 import { usePrediction } from "@/hooks/usePrediction";
 import { ArrowLeft, RefreshCw, TrendingUp, Clock, CheckCircle } from "lucide-react";
@@ -30,6 +32,7 @@ export default function CoinDetailPage() {
     ticker,
     timeframe,
     loading,
+    error,
     lastRefresh,
     changeTimeframe,
     refresh,
@@ -57,6 +60,23 @@ export default function CoinDetailPage() {
 
   const displaySymbol = symbol.includes("/") ? symbol : symbol.replace("USDT", "/USDT");
 
+  if (error && !signal && !loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Link
+            href="/"
+            className="p-2 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
+          >
+            <ArrowLeft size={18} />
+          </Link>
+          <h2 className="text-lg font-semibold text-heading">{displaySymbol}</h2>
+        </div>
+        <ErrorState message={error} onRetry={refresh} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* 페이지 타이틀 바 */}
@@ -65,6 +85,7 @@ export default function CoinDetailPage() {
           <Link
             href="/"
             className="p-2 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
+            aria-label="대시보드로 돌아가기"
           >
             <ArrowLeft size={18} />
           </Link>
@@ -76,6 +97,7 @@ export default function CoinDetailPage() {
           <button
             onClick={refresh}
             className="p-2 rounded-card hover:bg-card-active text-icon-muted hover:text-heading transition-colors"
+            aria-label="데이터 새로고침"
           >
             <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
           </button>
@@ -88,6 +110,7 @@ export default function CoinDetailPage() {
         ticker={ticker}
         signal={signal}
         lastRefresh={lastRefresh}
+        loading={loading && !ticker}
       />
 
       {/* 차트 + 종합 판단 */}
@@ -134,7 +157,6 @@ export default function CoinDetailPage() {
           ) : (
             <CandleChart candles={candles} symbol={displaySymbol} prediction={activePrediction} />
           )}
-          {/* 활성 예측 실시간 추적 카드 */}
           {activePrediction && activePrediction.status === "ACTIVE" && (
             <div className="mt-4 animate-fade-in">
               <PredictionInfoCard prediction={activePrediction} />
@@ -161,7 +183,7 @@ export default function CoinDetailPage() {
               <div className="mb-4 px-3 py-2 rounded-card bg-success/10 border border-success/20 text-center">
                 <span className="text-sm text-success font-medium">
                   시그널 확정 ({signal.track.consecutive_scans}회 연속
-                  {signal.track.confirmed_at && `, ${getAgeText(signal.track.confirmed_at)} 확정`})
+                  {signal.track.confirmed_at && `, ${timeAgo(signal.track.confirmed_at)} 확정`})
                 </span>
               </div>
             )}
@@ -185,7 +207,7 @@ export default function CoinDetailPage() {
             )}
             {signal?.track && (
               <p className="text-xs text-muted text-center mb-3">
-                {getAgeText(signal.track.first_detected_at)} 포착 | {signal.track.consecutive_scans}회 연속 확인
+                {timeAgo(signal.track.first_detected_at)} 포착 | {signal.track.consecutive_scans}회 연속 확인
               </p>
             )}
             {signal?.summary && (
@@ -266,27 +288,11 @@ export default function CoinDetailPage() {
   );
 }
 
-function getAgeText(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "방금 전";
-  if (minutes < 60) return `${minutes}분 전`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}시간 전`;
-  return `${Math.floor(hours / 24)}일 전`;
-}
-
-function formatPrice(price: number): string {
-  if (price >= 1000) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (price >= 1) return price.toFixed(4);
-  return price.toFixed(6);
-}
-
 function PriceStatItem({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div className="px-3 py-2 rounded-card bg-card-active">
       <div className="text-xs text-muted mb-0.5">{label}</div>
-      <div className="text-sm font-mono font-semibold" style={{ color: color || "#ffffff" }}>
+      <div className="text-sm font-mono font-semibold" style={{ color: color || "var(--text-heading)" }}>
         {value}
       </div>
     </div>

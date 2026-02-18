@@ -6,6 +6,7 @@ import { Signal } from "@/lib/api";
 import SignalBadge from "./SignalBadge";
 import SignalStateBadge from "./SignalStateBadge";
 import MTFBadge from "./MTFBadge";
+import { formatPrice } from "@/lib/utils";
 import { ExternalLink, ChevronUp, ChevronDown, Radio } from "lucide-react";
 
 interface SignalTableProps {
@@ -25,12 +26,6 @@ const FILTER_CONFIG: { key: FilterType; label: string; activeClass: string }[] =
   { key: "short", label: "숏", activeClass: "bg-short-muted text-short" },
   { key: "confirmed", label: "확정", activeClass: "bg-long-muted text-long" },
 ];
-
-function formatPrice(price: number): string {
-  if (price >= 1000) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (price >= 1) return price.toFixed(4);
-  return price.toFixed(6);
-}
 
 const signalOrder: Record<string, number> = {
   STRONG_LONG: 5,
@@ -160,21 +155,21 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
             </tr>
           </thead>
           <tbody>
-            {filtered.map((sig) => {
+            {filtered.map((sig, idx) => {
               const isConfirmed = sig.track?.state === "CONFIRMED";
               const isNeutral = sig.signal === "NEUTRAL";
               return (
                 <tr
                   key={sig.symbol}
                   onClick={() => onSelect(sig.symbol)}
-                  className={`border-t border-card-active cursor-pointer transition-colors ${
+                  className={`border-t border-card-active cursor-pointer transition-colors animate-stagger-in ${
                     selectedSymbol === sig.symbol
                       ? "bg-primary/10"
                       : isNeutral
                         ? "hover:bg-card opacity-60"
                         : "hover:bg-card"
                   }`}
-                  style={isConfirmed ? { borderLeft: "3px solid var(--long)" } : undefined}
+                  style={{ ...(isConfirmed ? { borderLeft: "3px solid var(--long)" } : {}), animationDelay: `${idx * 30}ms` }}
                 >
                   <td className="px-4 py-3">
                     <div className="font-medium text-heading">{sig.symbol}</div>

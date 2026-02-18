@@ -2,18 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Market, fetchMarkets } from "@/lib/api";
-import { Search, X } from "lucide-react";
+import { formatVolume } from "@/lib/utils";
+import { Search, X, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 interface CoinSearchProps {
   currentSymbol?: string;
-}
-
-function formatVolume(vol: number): string {
-  if (vol >= 1_000_000_000) return `${(vol / 1_000_000_000).toFixed(1)}B`;
-  if (vol >= 1_000_000) return `${(vol / 1_000_000).toFixed(1)}M`;
-  if (vol >= 1_000) return `${(vol / 1_000).toFixed(1)}K`;
-  return vol.toFixed(0);
 }
 
 export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
@@ -22,11 +16,18 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [filtered, setFiltered] = useState<Market[]>([]);
   const [isOpen, setIsOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchMarkets().then(setMarkets).catch(console.error);
+    setLoading(true);
+    fetchMarkets()
+      .then(setMarkets)
+      .catch(console.error)
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -38,6 +39,7 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
     setFiltered(
       markets.filter((m) => m.symbol.toUpperCase().includes(q)).slice(0, 20)
     );
+    setActiveIndex(-1);
   }, [query, markets]);
 
   // 외부 클릭 시 닫기
@@ -57,39 +59,92 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
       router.push(`/coin/${urlSymbol}`);
       setIsOpen(false);
       setQuery("");
+      setActiveIndex(-1);
     },
     [router]
   );
 
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!isOpen || filtered.length === 0) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIndex((prev) => (prev < filtered.length - 1 ? prev + 1 : 0));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIndex((prev) => (prev > 0 ? prev - 1 : filtered.length - 1));
+      } else if (e.key === "Enter" && activeIndex >= 0) {
+        e.preventDefault();
+        handleSelect(filtered[activeIndex].symbol);
+      } else if (e.key === "Escape") {
+        setIsOpen(false);
+        inputRef.current?.blur();
+      }
+    },
+    [isOpen, filtered, activeIndex, handleSelect]
+  );
+
+  // 활성 항목이 보이도록 스크롤
+  useEffect(() => {
+    if (activeIndex >= 0 && listRef.current) {
+      const activeEl = listRef.current.children[activeIndex] as HTMLElement;
+      activeEl?.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeIndex]);
+
+  const listId = "coin-search-listbox";
+
   return (
     <div ref={containerRef} className="relative">
       <div className="flex items-center gap-2 bg-body border border-border rounded-lg px-3 py-1.5">
-        <Search size={14} className="text-muted" />
+        {loading ? (
+          <Loader2 size={14} className="text-muted animate-spin" />
+        ) : (
+          <Search size={14} className="text-muted" />
+        )}
         <input
           ref={inputRef}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setIsOpen(true)}
+          onKeyDown={handleKeyDown}
           placeholder="코인 검색..."
           className="bg-transparent text-sm text-heading placeholder-muted outline-none w-40"
+          role="combobox"
+          aria-expanded={isOpen}
+          aria-controls={listId}
+          aria-activedescendant={activeIndex >= 0 ? `coin-option-${activeIndex}` : undefined}
+          aria-autocomplete="list"
         />
         {query && (
-          <button onClick={() => { setQuery(""); inputRef.current?.focus(); }}>
+          <button
+            onClick={() => { setQuery(""); inputRef.current?.focus(); }}
+            aria-label="검색 초기화"
+          >
             <X size={14} className="text-muted hover:text-white" />
           </button>
         )}
       </div>
 
       {isOpen && filtered.length > 0 && (
-        <div className="absolute top-full left-0 mt-1 w-80 max-h-80 overflow-auto bg-card border border-border rounded-lg shadow-xl z-50">
-          {filtered.map((m) => (
+        <div
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          className="absolute top-full left-0 mt-1 w-[calc(100vw-2rem)] sm:w-80 max-h-80 overflow-auto bg-card border border-border rounded-lg shadow-dropdown z-50 animate-dropdown-in"
+        >
+          {filtered.map((m, idx) => (
             <button
               key={m.symbol}
+              id={`coin-option-${idx}`}
+              role="option"
+              aria-selected={activeIndex === idx}
               onClick={() => handleSelect(m.symbol)}
               className={`w-full px-4 py-2.5 flex items-center justify-between hover:bg-card-active transition-colors text-left ${
-                currentSymbol === m.symbol.replace("/", "") ? "bg-[#4680ff22]" : ""
-              }`}
+                activeIndex === idx ? "bg-card-active" : ""
+              } ${currentSymbol === m.symbol.replace("/", "") ? "bg-primary/10" : ""}`}
             >
               <div>
                 <span className="text-sm font-medium text-heading">

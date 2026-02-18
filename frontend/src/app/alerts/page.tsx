@@ -10,26 +10,11 @@ import {
   updateAlertConfig,
   markAlertsRead,
 } from "@/lib/api";
+import { signalColor, timeAgo } from "@/lib/utils";
 import { TableSkeleton } from "@/components/Skeleton";
 import { Bell, Settings, Check } from "lucide-react";
 
 const SIGNAL_OPTIONS = ["STRONG_LONG", "LONG", "SHORT", "STRONG_SHORT"];
-
-function signalColor(signal: string): string {
-  if (signal.includes("LONG")) return "var(--long)";
-  if (signal.includes("SHORT")) return "var(--short)";
-  return "var(--text-muted)";
-}
-
-function timeAgo(timestamp: string): string {
-  const diff = Date.now() - new Date(timestamp).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "방금";
-  if (minutes < 60) return `${minutes}분 전`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}시간 전`;
-  return `${Math.floor(hours / 24)}일 전`;
-}
 
 export default function AlertsPage() {
   const [tab, setTab] = useState<"history" | "settings">("history");

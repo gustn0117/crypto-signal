@@ -25,6 +25,7 @@ const config: Config = {
         // 시맨틱 시그널 컬러
         long: { DEFAULT: "#26dad2", muted: "rgba(38,218,210,0.12)" },
         short: { DEFAULT: "#ef5350", muted: "rgba(239,83,80,0.12)" },
+        weakening: { DEFAULT: "#f0883e", muted: "rgba(240,136,62,0.12)" },
         profit: "#4caf50",
         loss: "#ef5350",
 

@@ -1,5 +1,4 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
 // ─── 에러 처리 래퍼 ───────────────────────────────────
 
@@ -261,14 +260,6 @@ export async function scanMarket(
   return data.signals || [];
 }
 
-export async function fetchLatestSignals(): Promise<{
-  signals: Signal[];
-  last_scan_time: string;
-  total_signals: number;
-}> {
-  return fetchWithError(`${API_BASE}/api/signals`);
-}
-
 export async function fetchSignalHistory(params: {
   symbol?: string;
   timeframe?: string;
@@ -281,11 +272,6 @@ export async function fetchSignalHistory(params: {
   if (params.limit) query.set("limit", String(params.limit));
   if (params.offset) query.set("offset", String(params.offset));
   return fetchWithError(`${API_BASE}/api/signals/history?${query}`);
-}
-
-export async function fetchTimeframes(): Promise<string[]> {
-  const data = await fetchWithError<{ timeframes: string[] }>(`${API_BASE}/api/timeframes`);
-  return data.timeframes || [];
 }
 
 // ─── 알림 API ─────────────────────────────────────────
@@ -379,13 +365,6 @@ export async function fetchPredictionDashboard(): Promise<PredictionDashboardSta
   return fetchWithError(`${API_BASE}/api/predictions/dashboard`);
 }
 
-export async function fetchAllActivePredictions(): Promise<Prediction[]> {
-  const data = await fetchWithError<{ predictions: Prediction[] }>(
-    `${API_BASE}/api/predictions/active`
-  );
-  return data.predictions || [];
-}
-
 export async function verifyPrediction(predictionId: number): Promise<Prediction> {
   const res = await fetch(
     `${API_BASE}/api/predictions/${predictionId}/verify`,
@@ -398,27 +377,3 @@ export async function verifyPrediction(predictionId: number): Promise<Prediction
   return res.json();
 }
 
-// ─── WebSocket ────────────────────────────────────────
-
-export function createWebSocket(
-  onMessage: (data: any) => void,
-  onError?: (error: Event) => void
-): WebSocket {
-  const ws = new WebSocket(`${WS_BASE}/ws`);
-
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      onMessage(data);
-    } catch (e) {
-      console.error("WebSocket 메시지 파싱 오류:", e);
-    }
-  };
-
-  ws.onerror = (error) => {
-    console.error("WebSocket 오류:", error);
-    onError?.(error);
-  };
-
-  return ws;
-}

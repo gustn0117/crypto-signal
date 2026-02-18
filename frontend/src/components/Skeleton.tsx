@@ -48,16 +48,21 @@ export function TableSkeleton({ rows = 8 }: { rows?: number }) {
   );
 }
 
-export function SummaryCardsSkeleton() {
+export function AlertListSkeleton({ rows = 4 }: { rows?: number }) {
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="cd-card flex items-center gap-3 animate-pulse">
-          <Pulse className="w-10 h-10 rounded-lg shrink-0" />
+    <div className="space-y-0">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="flex items-start gap-3 px-4 py-3 border-b border-border">
+          <Pulse className="w-2 h-2 rounded-full mt-1.5 shrink-0" />
           <div className="flex-1 min-w-0">
-            <Pulse className="h-3 w-16 mb-1.5" />
-            <Pulse className="h-6 w-12" />
+            <div className="flex items-center gap-2 mb-1">
+              <Pulse className="h-4 w-20" />
+              <Pulse className="h-4 w-14 rounded-full" />
+            </div>
+            <Pulse className="h-3 w-full mb-1" />
+            <Pulse className="h-3 w-2/3" />
           </div>
+          <Pulse className="h-3 w-12 shrink-0" />
         </div>
       ))}
     </div>

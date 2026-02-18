@@ -12,17 +12,17 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
   const [ticker, setTicker] = useState<Ticker | null>(null);
   const [timeframe, setTimeframe] = useState(initialTimeframe);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string>("");
 
-  // BTC/USDT 형식으로 정규화
   const normalizedSymbol = symbol.includes("/") ? symbol : symbol.replace("USDT", "/USDT");
   const normalizedRef = useRef(normalizedSymbol);
   normalizedRef.current = normalizedSymbol;
 
-  // 초기 데이터 로드
   const loadData = useCallback(
     async (tf: string) => {
       setLoading(true);
+      setError(null);
       try {
         const [analysisData, ohlcvData, tickerData] = await Promise.all([
           analyzeSymbol(normalizedRef.current, tf),
@@ -33,8 +33,10 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
         setCandles(ohlcvData);
         setTicker(tickerData);
         setLastRefresh(new Date().toISOString());
-      } catch (error) {
-        console.error("데이터 로드 실패:", error);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "데이터를 불러오는 데 실패했습니다";
+        setError(message);
+        console.error("데이터 로드 실패:", err);
       } finally {
         setLoading(false);
       }
@@ -42,12 +44,10 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
     []
   );
 
-  // 초기 로드
   useEffect(() => {
     loadData(timeframe);
   }, [loadData, timeframe, normalizedSymbol]);
 
-  // WebSocket 구독
   useEffect(() => {
     if (connected) {
       subscribe(normalizedSymbol, timeframe);
@@ -57,7 +57,6 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
     };
   }, [connected, normalizedSymbol, timeframe, subscribe, unsubscribe]);
 
-  // WS에서 분석 결과 수신 시 갱신
   useEffect(() => {
     if (analysis && analysis.symbol === normalizedSymbol) {
       setSignal(analysis);
@@ -65,7 +64,6 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
     }
   }, [analysis, normalizedSymbol]);
 
-  // 티커 폴링 (5초)
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -76,7 +74,6 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
     return () => clearInterval(interval);
   }, [normalizedSymbol]);
 
-  // 캔들 폴링 (30초)
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -101,6 +98,7 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
     ticker,
     timeframe,
     loading,
+    error,
     connected,
     lastRefresh,
     changeTimeframe,

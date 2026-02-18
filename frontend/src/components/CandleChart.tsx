@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createChart,
   IChartApi,
@@ -18,6 +18,10 @@ interface CandleChartProps {
   prediction?: Prediction | null;
 }
 
+// lightweight-charts는 canvas이므로 hex 하드코딩 필수 (CSS vars 사용 불가)
+// 디자인 토큰: body=#070713, text=#abafb3, border=rgba(120,130,140,0.13)
+// long=#26dad2, short=#ef5350, primary=#4680ff, warning=#ffb22b
+
 export default function CandleChart({ candles, symbol, prediction }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -32,6 +36,8 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const getHeight = () => (window.innerWidth < 640 ? 360 : 500);
+
     const chart = createChart(containerRef.current, {
       layout: {
         background: { color: "#070713" },
@@ -41,21 +47,16 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
         vertLines: { color: "rgba(120, 130, 140, 0.13)" },
         horzLines: { color: "rgba(120, 130, 140, 0.13)" },
       },
-      crosshair: {
-        mode: 0,
-      },
-      rightPriceScale: {
-        borderColor: "rgba(120, 130, 140, 0.13)",
-      },
+      crosshair: { mode: 0 },
+      rightPriceScale: { borderColor: "rgba(120, 130, 140, 0.13)" },
       timeScale: {
         borderColor: "rgba(120, 130, 140, 0.13)",
         timeVisible: true,
       },
       width: containerRef.current.clientWidth,
-      height: 500,
+      height: getHeight(),
     });
 
-    // 캔들스틱 시리즈
     const candleSeries = chart.addCandlestickSeries({
       upColor: "#26dad2",
       downColor: "#ef5350",
@@ -65,7 +66,6 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
       wickUpColor: "#26dad2",
     });
 
-    // 거래량 히스토그램
     const volumeSeries = chart.addHistogramSeries({
       color: "#26a69a",
       priceFormat: { type: "volume" },
@@ -76,27 +76,24 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
       scaleMargins: { top: 0.8, bottom: 0 },
     });
 
-    // 예측 경로 (파란색 점선)
     const predLine = chart.addLineSeries({
       color: "#4680ff",
       lineWidth: 2,
-      lineStyle: 2, // Dashed
+      lineStyle: 2,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
-    // 상한선 (반투명)
     const predUpper = chart.addLineSeries({
       color: "rgba(70, 128, 255, 0.25)",
       lineWidth: 1,
-      lineStyle: 1, // Dotted
+      lineStyle: 1,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
-    // 하한선 (반투명)
     const predLower = chart.addLineSeries({
       color: "rgba(70, 128, 255, 0.25)",
       lineWidth: 1,
@@ -106,11 +103,10 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
       lastValueVisible: false,
     });
 
-    // 실제 경로 (검증 후 금색 실선)
     const actualLine = chart.addLineSeries({
       color: "#ffb22b",
       lineWidth: 2,
-      lineStyle: 0, // Solid
+      lineStyle: 0,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
       lastValueVisible: false,
@@ -124,15 +120,24 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
     predLowerRef.current = predLower;
     actualLineRef.current = actualLine;
 
-    const handleResize = () => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
-      }
-    };
-    window.addEventListener("resize", handleResize);
+    // ResizeObserver로 반응형 크기 조정
+    let resizeTimer: ReturnType<typeof setTimeout>;
+    const ro = new ResizeObserver((entries) => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        for (const entry of entries) {
+          chart.applyOptions({
+            width: entry.contentRect.width,
+            height: getHeight(),
+          });
+        }
+      }, 100);
+    });
+    ro.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      clearTimeout(resizeTimer);
+      ro.disconnect();
       chart.remove();
     };
   }, []);
@@ -198,7 +203,6 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
   useEffect(() => {
     if (!candleSeriesRef.current) return;
 
-    // 기존 라인 제거
     for (const line of priceLinesRef.current) {
       try {
         candleSeriesRef.current.removePriceLine(line);
@@ -224,7 +228,7 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
         price,
         color,
         lineWidth: 1,
-        lineStyle: 2, // Dashed
+        lineStyle: 2,
         axisLabelVisible: true,
         title,
       });
@@ -239,11 +243,11 @@ export default function CandleChart({ candles, symbol, prediction }: CandleChart
         {prediction && (
           <div className="flex items-center gap-2 text-xs">
             <span className="w-3 h-0.5 inline-block" style={{ borderTop: "2px dashed #4680ff", backgroundColor: "#4680ff" }} />
-            <span style={{ color: "#4680ff" }}>예측</span>
+            <span className="text-primary">예측</span>
             {prediction.actual_path && (
               <>
                 <span className="w-3 h-0.5 inline-block" style={{ backgroundColor: "#ffb22b" }} />
-                <span style={{ color: "#ffb22b" }}>실제</span>
+                <span className="text-warning">실제</span>
               </>
             )}
           </div>

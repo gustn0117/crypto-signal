@@ -16,6 +16,7 @@ const SIGNAL_CONFIG: Record<string, { label: string; color: string; bg: string }
 
 export default function SignalBadge({ signal, confidence, size = "md" }: SignalBadgeProps) {
   const config = SIGNAL_CONFIG[signal] || SIGNAL_CONFIG.NEUTRAL;
+  const isStrong = signal === "STRONG_LONG" || signal === "STRONG_SHORT";
 
   const sizeClasses = {
     sm: "text-xs px-2 py-0.5",
@@ -29,7 +30,7 @@ export default function SignalBadge({ signal, confidence, size = "md" }: SignalB
       style={{ color: config.color, backgroundColor: config.bg, border: `1px solid ${config.color}33` }}
     >
       <span
-        className="w-2 h-2 rounded-full"
+        className={`w-2 h-2 rounded-full ${isStrong ? "animate-pulse" : ""}`}
         style={{ backgroundColor: config.color }}
       />
       {config.label}

@@ -1,6 +1,7 @@
 "use client";
 
 import { SignalTrack } from "@/lib/api";
+import { timeAgo } from "@/lib/utils";
 
 const STATE_CONFIG: Record<string, {
   label: string;
@@ -10,39 +11,29 @@ const STATE_CONFIG: Record<string, {
 }> = {
   FORMING: {
     label: "포착",
-    color: "#4680ff",
+    color: "var(--primary)",
     bgColor: "rgba(70,128,255,0.15)",
     pulse: true,
   },
   CONFIRMING: {
     label: "확인 중",
-    color: "#ffb22b",
+    color: "var(--warning)",
     bgColor: "rgba(255,178,43,0.15)",
     pulse: true,
   },
   CONFIRMED: {
     label: "확정",
-    color: "#26dad2",
+    color: "var(--long)",
     bgColor: "rgba(38,218,210,0.15)",
     pulse: false,
   },
   WEAKENING: {
     label: "약화",
-    color: "#f0883e",
+    color: "var(--weakening)",
     bgColor: "rgba(240,136,62,0.15)",
     pulse: false,
   },
 };
-
-function getAgeText(firstDetectedAt: string): string {
-  const diff = Date.now() - new Date(firstDetectedAt).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "방금 전";
-  if (minutes < 60) return `${minutes}분 전`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}시간 전`;
-  return `${Math.floor(hours / 24)}일 전`;
-}
 
 export default function SignalStateBadge({
   track,
@@ -76,7 +67,7 @@ export default function SignalStateBadge({
       </span>
       {showDetail && (
         <span className="text-[10px] text-muted">
-          {track.consecutive_scans}회 · {getAgeText(track.first_detected_at)}
+          {track.consecutive_scans}회 · {timeAgo(track.first_detected_at)}
         </span>
       )}
     </div>

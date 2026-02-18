@@ -5,21 +5,11 @@ import Link from "next/link";
 import { Signal, fetchSignalHistory } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
 import { TableSkeleton } from "@/components/Skeleton";
+import { formatPrice, formatTime } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
 
 const PAGE_SIZE = 30;
 const SIGNAL_FILTERS = ["전체", "STRONG_LONG", "LONG", "SHORT", "STRONG_SHORT"];
-
-function formatPrice(price: number): string {
-  if (price >= 1000) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (price >= 1) return price.toFixed(4);
-  return price.toFixed(6);
-}
-
-function formatTime(ts: string): string {
-  const d = new Date(ts);
-  return d.toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
 
 export default function HistoryPage() {
   const [signals, setSignals] = useState<Signal[]>([]);

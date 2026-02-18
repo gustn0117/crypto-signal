@@ -37,6 +37,7 @@ export default function Header({
           <button
             onClick={onMenuClick}
             className="p-2 -ml-1 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
+            aria-label="사이드바 메뉴 열기"
           >
             <Menu size={20} />
           </button>

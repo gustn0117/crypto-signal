@@ -61,6 +61,7 @@ export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
             <button
               onClick={onClose}
               className="p-1.5 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
+              aria-label="사이드바 닫기"
             >
               <X size={18} />
             </button>
@@ -154,6 +155,8 @@ export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
         onClick={() => setCollapsed(!collapsed)}
         className="p-3 flex items-center justify-center text-icon-muted hover:text-heading transition-colors border-t"
         style={{ borderColor: "var(--border)" }}
+        aria-label={collapsed ? "사이드바 펼치기" : "사이드바 접기"}
+        aria-expanded={!collapsed}
       >
         {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
       </button>

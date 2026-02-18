@@ -111,32 +111,14 @@ export default function Dashboard() {
       {/* 요약 카드 */}
       {signals.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <SummaryCard
-            label="확정 시그널"
-            count={signals.filter((s) => s.track?.state === "CONFIRMED").length}
-            color="#26dad2"
-            icon={CheckCircle}
-          />
-          <SummaryCard
-            label="포착 중"
-            count={signals.filter((s) => s.track?.state === "FORMING" || s.track?.state === "CONFIRMING").length}
-            color="#ffb22b"
-            icon={Eye}
-          />
-          <SummaryCard
-            label="롱 / 숏"
-            count={signals.filter((s) => s.signal.includes("LONG")).length}
-            suffix={` / ${signals.filter((s) => s.signal.includes("SHORT")).length}`}
-            color="#4680ff"
-            icon={ArrowUpDown}
-          />
-          <SummaryCard
-            label="활성 / 관망"
-            count={signals.filter((s) => s.signal !== "NEUTRAL").length}
-            suffix={` / ${signals.filter((s) => s.signal === "NEUTRAL").length}`}
-            color="#abafb3"
-            icon={Activity}
-          />
+          {[
+            { label: "확정 시그널", count: signals.filter((s) => s.track?.state === "CONFIRMED").length, color: "#26dad2", icon: CheckCircle },
+            { label: "포착 중", count: signals.filter((s) => s.track?.state === "FORMING" || s.track?.state === "CONFIRMING").length, color: "#ffb22b", icon: Eye },
+            { label: "롱 / 숏", count: signals.filter((s) => s.signal.includes("LONG")).length, suffix: ` / ${signals.filter((s) => s.signal.includes("SHORT")).length}`, color: "#4680ff", icon: ArrowUpDown },
+            { label: "활성 / 관망", count: signals.filter((s) => s.signal !== "NEUTRAL").length, suffix: ` / ${signals.filter((s) => s.signal === "NEUTRAL").length}`, color: "#abafb3", icon: Activity },
+          ].map((card, idx) => (
+            <SummaryCard key={card.label} {...card} style={{ animationDelay: `${idx * 60}ms` }} />
+          ))}
         </div>
       )}
 
@@ -217,15 +199,17 @@ function SummaryCard({
   color,
   suffix,
   icon: Icon,
+  style,
 }: {
   label: string;
   count: number;
   color: string;
   suffix?: string;
   icon: LucideIcon;
+  style?: React.CSSProperties;
 }) {
   return (
-    <div className="cd-card flex items-center gap-3">
+    <div className="cd-card flex items-center gap-3 animate-stagger-in" style={style}>
       <div
         className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
         style={{ backgroundColor: `${color}15` }}

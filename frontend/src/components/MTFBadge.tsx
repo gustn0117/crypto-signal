@@ -1,22 +1,26 @@
 "use client";
 
 import { MTFData } from "@/lib/api";
+import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 
 interface MTFBadgeProps {
   mtf: MTFData;
   size?: "sm" | "md";
 }
 
+const ALIGNMENT_STYLES: Record<string, { color: string; bg: string; border: string }> = {
+  aligned: { color: "var(--long)", bg: "rgba(38,218,210,0.08)", border: "rgba(38,218,210,0.25)" },
+  opposed: { color: "var(--short)", bg: "rgba(239,83,80,0.08)", border: "rgba(239,83,80,0.25)" },
+  neutral: { color: "var(--text-body)", bg: "rgba(171,175,179,0.08)", border: "rgba(171,175,179,0.25)" },
+};
+
 export default function MTFBadge({ mtf, size = "md" }: MTFBadgeProps) {
-  const colorMap: Record<string, { bg: string; text: string; border: string }> = {
-    aligned: { bg: "#26dad215", text: "#26dad2", border: "#26dad240" },
-    opposed: { bg: "#ef535015", text: "#ef5350", border: "#ef535040" },
-    neutral: { bg: "#abafb315", text: "#abafb3", border: "#abafb340" },
-  };
+  const style = ALIGNMENT_STYLES[mtf.alignment] || ALIGNMENT_STYLES.neutral;
 
-  const style = colorMap[mtf.alignment] || colorMap.neutral;
-
-  const trendIcon = mtf.higher_tf_trend === "bullish" ? "\u25B2" : mtf.higher_tf_trend === "bearish" ? "\u25BC" : "\u25C6";
+  const TrendIcon =
+    mtf.higher_tf_trend === "bullish" ? TrendingUp
+    : mtf.higher_tf_trend === "bearish" ? TrendingDown
+    : Minus;
 
   const alignLabel =
     mtf.alignment === "aligned" ? "정렬" : mtf.alignment === "opposed" ? "반대" : "중립";
@@ -32,9 +36,10 @@ export default function MTFBadge({ mtf, size = "md" }: MTFBadgeProps) {
     return (
       <span
         className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded border"
-        style={{ color: style.text, backgroundColor: style.bg, borderColor: style.border }}
+        style={{ color: style.color, backgroundColor: style.bg, borderColor: style.border }}
       >
-        {trendIcon} {mtf.higher_tf} {alignLabel}
+        <TrendIcon size={12} />
+        {mtf.higher_tf} {alignLabel}
         {modifierText && <span className="opacity-75">{modifierText}</span>}
       </span>
     );
@@ -47,13 +52,13 @@ export default function MTFBadge({ mtf, size = "md" }: MTFBadgeProps) {
     >
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
-          <span className="text-base" style={{ color: style.text }}>{trendIcon}</span>
-          <span className="text-sm font-semibold" style={{ color: style.text }}>
+          <TrendIcon size={16} style={{ color: style.color }} />
+          <span className="text-sm font-semibold" style={{ color: style.color }}>
             {mtf.higher_tf} {alignLabel}
           </span>
         </div>
         {modifierText && (
-          <span className="text-xs font-bold" style={{ color: style.text }}>
+          <span className="text-xs font-bold" style={{ color: style.color }}>
             {modifierText}
           </span>
         )}

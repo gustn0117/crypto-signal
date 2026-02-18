@@ -7,7 +7,6 @@ interface IndicatorGaugeProps {
 }
 
 export default function IndicatorGauge({ indicator }: IndicatorGaugeProps) {
-  // position: 0(SHORT) ~ 50(NEUTRAL) ~ 100(LONG)
   const position =
     indicator.signal === "long"
       ? 50 + indicator.strength * 50
@@ -17,10 +16,10 @@ export default function IndicatorGauge({ indicator }: IndicatorGaugeProps) {
 
   const color =
     indicator.signal === "long"
-      ? "#4caf50"
+      ? "var(--long)"
       : indicator.signal === "short"
-      ? "#ef5350"
-      : "#abafb3";
+      ? "var(--short)"
+      : "var(--text-body)";
 
   const signalLabel =
     indicator.signal === "long"
@@ -31,38 +30,34 @@ export default function IndicatorGauge({ indicator }: IndicatorGaugeProps) {
 
   return (
     <div className="p-3 rounded-lg bg-card border border-card-active">
-      {/* 상단: 이름 + 시그널 */}
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm font-semibold text-heading">{indicator.name}</span>
-        <span className="text-xs font-medium px-2 py-0.5 rounded" style={{ color, backgroundColor: `${color}20` }}>
+        <span
+          className="text-xs font-medium px-2 py-0.5 rounded"
+          style={{ color, backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)` }}
+        >
           {signalLabel}
         </span>
       </div>
 
-      {/* 게이지 바 */}
       <div className="relative h-2 bg-card-active rounded-full overflow-hidden mb-2">
-        {/* 배경 그라데이션 */}
         <div
           className="absolute inset-0 rounded-full"
           style={{
-            background: "linear-gradient(to right, #ef535040, #10112d 40%, #10112d 60%, #26dad240)",
+            background: "linear-gradient(to right, rgba(239,83,80,0.25), var(--bg-active) 40%, var(--bg-active) 60%, rgba(38,218,210,0.25))",
           }}
         />
-        {/* 마커 */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full transition-all duration-500"
+          className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 transition-all duration-500"
           style={{
             left: `${position}%`,
             transform: `translate(-50%, -50%)`,
             backgroundColor: color,
-            borderWidth: 2,
-            borderColor: "#070713",
-            boxShadow: `0 0 6px ${color}80`,
+            borderColor: "var(--bg-body)",
           }}
         />
       </div>
 
-      {/* 하단: 값 + 설명 */}
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted">
           {indicator.value !== undefined ? indicator.value.toFixed(2) : ""}

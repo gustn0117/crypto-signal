@@ -1,5 +1,7 @@
 "use client";
 
+import { useState, useEffect } from "react";
+
 interface ConfidenceMeterProps {
   confidence: number;
   signal: string;
@@ -7,42 +9,47 @@ interface ConfidenceMeterProps {
 }
 
 export default function ConfidenceMeter({ confidence, signal, size = 140 }: ConfidenceMeterProps) {
+  const [animatedConfidence, setAnimatedConfidence] = useState(0);
+
+  useEffect(() => {
+    const timer = requestAnimationFrame(() => setAnimatedConfidence(confidence));
+    return () => cancelAnimationFrame(timer);
+  }, [confidence]);
+
   const percentage = Math.round(confidence * 100);
   const color = signal.includes("LONG")
-    ? "#26dad2"
+    ? "var(--long)"
     : signal.includes("SHORT")
-    ? "#ef5350"
-    : "#abafb3";
+    ? "var(--short)"
+    : "var(--text-body)";
 
   const radius = (size - 20) / 2;
-  const circumference = Math.PI * radius; // 반원
-  const filled = circumference * confidence;
+  const circumference = Math.PI * radius;
+  const filled = circumference * animatedConfidence;
   const cx = size / 2;
   const cy = size / 2 + 5;
 
   const signalText =
     signal === "STRONG_LONG"
-      ? "Strong Long"
+      ? "강한 롱"
       : signal === "LONG"
-      ? "Long"
+      ? "롱"
       : signal === "STRONG_SHORT"
-      ? "Strong Short"
+      ? "강한 숏"
       : signal === "SHORT"
-      ? "Short"
-      : "Neutral";
+      ? "숏"
+      : "관망";
 
   return (
     <div className="flex flex-col items-center">
       <svg width={size} height={size * 0.65} viewBox={`0 0 ${size} ${size * 0.65}`}>
-        {/* 배경 호 */}
         <path
           d={`M ${cx - radius} ${cy} A ${radius} ${radius} 0 0 1 ${cx + radius} ${cy}`}
           fill="none"
-          stroke="#10112d"
+          stroke="var(--bg-active)"
           strokeWidth="8"
           strokeLinecap="round"
         />
-        {/* 채워진 호 */}
         <path
           d={`M ${cx - radius} ${cy} A ${radius} ${radius} 0 0 1 ${cx + radius} ${cy}`}
           fill="none"
@@ -50,12 +57,8 @@ export default function ConfidenceMeter({ confidence, signal, size = 140 }: Conf
           strokeWidth="8"
           strokeLinecap="round"
           strokeDasharray={`${filled} ${circumference}`}
-          style={{
-            filter: `drop-shadow(0 0 4px ${color}60)`,
-            transition: "stroke-dasharray 0.8s ease-out",
-          }}
+          style={{ transition: "stroke-dasharray 0.8s ease-out" }}
         />
-        {/* 퍼센트 텍스트 */}
         <text
           x={cx}
           y={cy - 12}
@@ -66,12 +69,11 @@ export default function ConfidenceMeter({ confidence, signal, size = 140 }: Conf
         >
           {percentage}%
         </text>
-        {/* 시그널 라벨 */}
         <text
           x={cx}
           y={cy + 2}
           textAnchor="middle"
-          fill="#abafb3"
+          fill="var(--text-body)"
           style={{ fontSize: size * 0.09 }}
         >
           {signalText}

@@ -1,6 +1,7 @@
 "use client";
 
 import { Signal } from "@/lib/api";
+import { formatPrice } from "@/lib/utils";
 import SignalBadge from "./SignalBadge";
 import MTFBadge from "./MTFBadge";
 import { AnalysisSkeleton } from "./Skeleton";
@@ -9,12 +10,6 @@ import { BarChart3 } from "lucide-react";
 interface AnalysisPanelProps {
   signal: Signal | null;
   loading?: boolean;
-}
-
-function formatCompact(price: number): string {
-  if (price >= 1000) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (price >= 1) return price.toFixed(4);
-  return price.toFixed(6);
 }
 
 function StrengthBar({ strength, signal }: { strength: number; signal: string }) {
@@ -80,15 +75,15 @@ export default function AnalysisPanel({ signal, loading }: AnalysisPanelProps) {
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div>
               <span className="text-muted">SL</span>
-              <div className="font-mono text-danger">${formatCompact(signal.trade_params.stop_loss)}</div>
+              <div className="font-mono text-danger">${formatPrice(signal.trade_params.stop_loss)}</div>
             </div>
             <div>
               <span className="text-muted">Entry</span>
-              <div className="font-mono text-primary">${formatCompact(signal.trade_params.entry_price)}</div>
+              <div className="font-mono text-primary">${formatPrice(signal.trade_params.entry_price)}</div>
             </div>
             <div>
               <span className="text-muted">TP1</span>
-              <div className="font-mono text-success-text">${formatCompact(signal.trade_params.take_profit_1)}</div>
+              <div className="font-mono text-success-text">${formatPrice(signal.trade_params.take_profit_1)}</div>
             </div>
           </div>
           <div className="flex items-center justify-between mt-2 text-xs text-muted">

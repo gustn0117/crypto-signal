@@ -14,7 +14,6 @@ export function useWebSocket() {
   const [analysis, setAnalysis] = useState<Signal | null>(null);
   const [unreadAlerts, setUnreadAlerts] = useState(0);
   const [latestAlert, setLatestAlert] = useState<Alert | null>(null);
-  const [latestTransition, setLatestTransition] = useState<any>(null);
   const [predictionCreated, setPredictionCreated] = useState<Prediction | null>(null);
   const [predictionProgress, setPredictionProgress] = useState<PredictionProgress[]>([]);
   const [predictionVerified, setPredictionVerified] = useState<Prediction | null>(null);
@@ -43,8 +42,6 @@ export function useWebSocket() {
           }
         } else if (message.type === "analysis" || message.type === "subscription_update") {
           setAnalysis(message.data);
-        } else if (message.type === "signal_transition") {
-          setLatestTransition(message.data);
         } else if (message.type === "alert") {
           setLatestAlert(message.data);
           setUnreadAlerts((prev) => prev + 1);
@@ -75,17 +72,6 @@ export function useWebSocket() {
     wsRef.current = ws;
   }, []);
 
-  const requestAnalysis = useCallback(
-    (symbol: string, timeframe: string) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({ type: "analyze", symbol, timeframe })
-        );
-      }
-    },
-    []
-  );
-
   const subscribe = useCallback(
     (symbol: string, timeframe: string) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -106,10 +92,6 @@ export function useWebSocket() {
 
   const clearLatestAlert = useCallback(() => {
     setLatestAlert(null);
-  }, []);
-
-  const clearLatestTransition = useCallback(() => {
-    setLatestTransition(null);
   }, []);
 
   const clearPredictionCreated = useCallback(() => {
@@ -139,15 +121,12 @@ export function useWebSocket() {
     analysis,
     unreadAlerts,
     latestAlert,
-    latestTransition,
     predictionCreated,
     predictionProgress,
     predictionVerified,
-    requestAnalysis,
     subscribe,
     unsubscribe,
     clearLatestAlert,
-    clearLatestTransition,
     clearPredictionCreated,
     clearPredictionVerified,
     resetUnreadAlerts,
