@@ -37,9 +37,9 @@ class DeployHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Ignored: not a push event")
             return
 
-        # 배포 실행 (비동기)
+        # 배포 실행 (비동기) - down 후 up으로 컨테이너 이름 충돌 방지
         subprocess.Popen(
-            ["sh", "-c", "cd /repo && git pull && docker compose up -d --build"],
+            ["sh", "-c", "cd /repo && git pull && docker compose down && docker compose up -d --build"],
         )
 
         self.send_response(200)
