@@ -170,6 +170,32 @@ export default function AnalysisPanel({ signal, loading }: AnalysisPanelProps) {
           </div>
         </div>
       )}
+
+      {/* 선물 데이터 */}
+      {signal.futures_signals && signal.futures_signals.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
+            선물 데이터
+          </h4>
+          <div className="space-y-2">
+            {signal.futures_signals.map((fut, i) => (
+              <div key={i} className="p-3 rounded-card bg-card-active">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium text-sm text-heading">{fut.name}</span>
+                  <span
+                    className="text-xs font-medium"
+                    style={{ color: fut.signal === "long" ? "var(--long)" : fut.signal === "short" ? "var(--short)" : "var(--text-muted)" }}
+                  >
+                    {fut.signal.toUpperCase()}
+                  </span>
+                </div>
+                <StrengthBar strength={fut.strength} signal={fut.signal} />
+                <p className="text-xs text-muted mt-1.5">{fut.description}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

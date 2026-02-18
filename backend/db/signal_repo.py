@@ -25,6 +25,7 @@ class SignalRepo:
                 "candle_patterns": s["candle_patterns"],
                 "chart_patterns": s.get("chart_patterns", []),
                 "volume_signals": s["volume_signals"],
+                "futures_signals": s.get("futures_signals", []),
                 "summary": s["summary"],
                 "created_at": s["timestamp"],
                 "scan_id": scan_id,
@@ -40,7 +41,7 @@ class SignalRepo:
         """자기학습용 시그널 조회 (최근 N개, NEUTRAL 포함)."""
         query = (
             self._table()
-            .select("symbol,timeframe,signal,confidence,indicators,candle_patterns,chart_patterns,volume_signals,created_at")
+            .select("symbol,timeframe,signal,confidence,indicators,candle_patterns,chart_patterns,volume_signals,futures_signals,created_at")
             .order("created_at", desc=True)
             .limit(limit)
         )
@@ -76,6 +77,7 @@ class SignalRepo:
             "candle_patterns": row["candle_patterns"],
             "chart_patterns": row.get("chart_patterns", []),
             "volume_signals": row["volume_signals"],
+            "futures_signals": row.get("futures_signals", []),
             "summary": row["summary"],
             "timestamp": row["created_at"],
             "scan_id": row["scan_id"],

@@ -31,6 +31,7 @@ export interface Signal {
   candle_patterns: CandlePattern[];
   chart_patterns: CandlePattern[];
   volume_signals: VolumeSignal[];
+  futures_signals: FuturesSignal[];
   summary: string;
   timestamp: string;
   trade_params?: TradeParamsData;
@@ -83,6 +84,14 @@ export interface CandlePattern {
 }
 
 export interface VolumeSignal {
+  name: string;
+  signal: string;
+  strength: number;
+  value: number;
+  description: string;
+}
+
+export interface FuturesSignal {
   name: string;
   signal: string;
   strength: number;
