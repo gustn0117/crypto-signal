@@ -13,12 +13,13 @@ from supabase import AsyncClient
 
 logger = logging.getLogger(__name__)
 
-# 기본 가중치
+# 기본 가중치 (signal_engine.py와 동일)
 DEFAULT_WEIGHTS = {
-    "indicators": 0.35,
-    "candle_patterns": 0.15,
-    "chart_patterns": 0.30,
-    "volume": 0.20,
+    "indicators": 0.30,
+    "candle_patterns": 0.12,
+    "chart_patterns": 0.25,
+    "volume": 0.15,
+    "futures_data": 0.18,
 }
 
 # 최소 샘플 수: 이 이상 모여야 학습 시작
@@ -138,7 +139,7 @@ class SelfLearningEngine:
         """최근 시그널 조회."""
         resp = (
             await self._table("signals")
-            .select("symbol,timeframe,signal,indicators,candle_patterns,chart_patterns,volume_signals,created_at")
+            .select("symbol,timeframe,signal,indicators,candle_patterns,chart_patterns,volume_signals,futures_signals,created_at")
             .order("created_at", desc=True)
             .limit(5000)
             .execute()
@@ -200,6 +201,10 @@ class SelfLearningEngine:
             self._score_category(
                 accuracy, closest.get("volume_signals") or [],
                 "volume", is_long, is_success
+            )
+            self._score_category(
+                accuracy, closest.get("futures_signals") or [],
+                "futures_data", is_long, is_success
             )
 
         logger.info("[자기학습] %d개 예측 중 %d개 매칭됨", len(predictions), matched)

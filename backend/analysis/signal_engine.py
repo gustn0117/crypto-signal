@@ -1,5 +1,6 @@
 """
 시그널 엔진 - 모든 분석 결과를 종합하여 최종 롱/숏 시그널 생성
+(12개 기술 지표 + 캔들 패턴 + 차트 패턴 + 거래량 + 선물 데이터 + 시장 맥락)
 """
 import logging
 import pandas as pd
@@ -13,6 +14,13 @@ from .indicators import (
     analyze_bollinger_bands,
     analyze_ema_cross,
     analyze_stochastic,
+    analyze_adx,
+    analyze_vwap,
+    analyze_ichimoku,
+    analyze_williams_r,
+    analyze_cci,
+    analyze_mfi,
+    analyze_cmf,
     IndicatorResult,
 )
 from .candle_patterns import analyze_candle_patterns, CandlePatternResult
@@ -27,6 +35,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class FuturesResult:
+    """선물 데이터 분석 결과"""
+    name: str
+    signal: str
+    strength: float
+    value: float
+    description: str
+
+
+@dataclass
 class TradeSignal:
     """최종 트레이드 시그널"""
     symbol: str
@@ -38,6 +56,7 @@ class TradeSignal:
     candle_patterns: List[dict] = field(default_factory=list)
     chart_patterns: List[dict] = field(default_factory=list)
     volume_signals: List[dict] = field(default_factory=list)
+    futures_signals: List[dict] = field(default_factory=list)
     summary: str = ""
     timestamp: str = ""
     trade_params: Optional[dict] = None
@@ -56,6 +75,7 @@ class TradeSignal:
             "candle_patterns": self.candle_patterns,
             "chart_patterns": self.chart_patterns,
             "volume_signals": self.volume_signals,
+            "futures_signals": self.futures_signals,
             "summary": self.summary,
             "timestamp": self.timestamp,
             "trade_params": self.trade_params,
@@ -68,24 +88,30 @@ class TradeSignal:
 class SignalEngine:
     """
     복합 전략 시그널 엔진
-    기술적 지표 + 캔들 패턴 + 거래량 분석을 종합하여 최종 시그널 생성
+    12개 기술 지표 + 캔들 패턴 + 차트 패턴 + 거래량 + 선물 데이터를 종합
     """
 
     DEFAULT_WEIGHTS = {
-        "indicators": 0.35,
-        "candle_patterns": 0.15,
-        "chart_patterns": 0.30,
-        "volume": 0.20,
+        "indicators": 0.30,
+        "candle_patterns": 0.12,
+        "chart_patterns": 0.25,
+        "volume": 0.15,
+        "futures_data": 0.18,
     }
 
     def __init__(self):
         self._adaptive_weights: dict | None = None
+        self._market_context: dict | None = None
 
     def set_adaptive_weights(self, weights: dict | None):
         """자기학습 엔진에서 계산된 적응형 가중치를 설정."""
         self._adaptive_weights = weights
         if weights:
             logger.info("적응형 가중치 적용: %s", {k: round(v, 3) for k, v in weights.items()})
+
+    def set_market_context(self, context: dict | None):
+        """시장 맥락 데이터 설정 (BTC 도미넌스, 공포탐욕지수 등)."""
+        self._market_context = context
 
     @property
     def weights(self) -> dict:
@@ -97,29 +123,40 @@ class SignalEngine:
         symbol: str,
         timeframe: str,
         higher_tf_df: Optional[pd.DataFrame] = None,
+        futures_data: Optional[List] = None,
     ) -> TradeSignal:
         """종합 분석 수행 후 TradeSignal 반환"""
         current_price = df["close"].iloc[-1]
 
-        # 1) 기술적 지표 분석
+        # 1) 기술적 지표 분석 (12개)
         indicator_results: List[IndicatorResult] = [
             analyze_rsi(df),
             analyze_macd(df),
             analyze_bollinger_bands(df),
             analyze_ema_cross(df),
             analyze_stochastic(df),
+            analyze_adx(df),
+            analyze_vwap(df),
+            analyze_ichimoku(df),
+            analyze_williams_r(df),
+            analyze_cci(df),
+            analyze_mfi(df),
+            analyze_cmf(df),
         ]
 
         # 2) 캔들 패턴 분석
         candle_results: List[CandlePatternResult] = analyze_candle_patterns(df)
 
-        # 3) 차트 패턴 분석 (구조적 패턴)
+        # 3) 차트 패턴 분석
         chart_results: List[ChartPatternResult] = analyze_chart_patterns(df)
 
         # 4) 거래량 분석
         volume_results: List[VolumeResult] = analyze_volume(df)
 
-        # 5) 점수 계산
+        # 5) 선물 데이터 (외부에서 전달)
+        futures_results = futures_data or []
+
+        # 6) 점수 계산
         indicator_score = self._calc_category_score(
             [(r.signal, r.strength) for r in indicator_results]
         )
@@ -132,46 +169,52 @@ class SignalEngine:
         volume_score = self._calc_category_score(
             [(r.signal, r.strength) for r in volume_results]
         ) if volume_results else 0.0
+        futures_score = self._calc_category_score(
+            [(r.signal, r.strength) for r in futures_results]
+        ) if futures_results else 0.0
 
-        # 6) 가중 합산 (적응형 가중치 사용)
+        # 7) 가중 합산
         w = self.weights
         total_score = (
-            indicator_score * w["indicators"]
-            + candle_score * w["candle_patterns"]
-            + chart_score * w["chart_patterns"]
-            + volume_score * w["volume"]
+            indicator_score * w.get("indicators", 0.30)
+            + candle_score * w.get("candle_patterns", 0.12)
+            + chart_score * w.get("chart_patterns", 0.25)
+            + volume_score * w.get("volume", 0.15)
+            + futures_score * w.get("futures_data", 0.18)
         )
 
-        # 6) 시그널 결정
+        # 8) 시그널 결정
         signal, confidence = self._determine_signal(total_score)
 
-        # 7) 가격 레벨 계산
+        # 9) 시장 맥락 보정 (BTC 도미넌스, Fear & Greed 등)
+        if self._market_context and symbol != "BTC/USDT":
+            confidence = self._apply_market_context(signal, confidence)
+
+        # 10) 가격 레벨 계산
         levels = calculate_levels(df)
 
-        # 8) 멀티 타임프레임 확인
+        # 11) 멀티 타임프레임 확인
         mtf_result: Optional[MTFConfirmation] = None
         if higher_tf_df is not None and len(higher_tf_df) >= 50:
             from config import HIGHER_TF_MAP
             higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
             mtf_result = check_higher_tf(higher_tf_df, signal, higher_tf)
             if mtf_result:
-                # MTF 보정 적용
                 confidence = max(0.0, min(1.0, confidence + mtf_result.confidence_modifier))
-                logger.debug(
-                    "%s MTF %s: %s (modifier=%.2f)",
-                    symbol, mtf_result.higher_tf, mtf_result.alignment, mtf_result.confidence_modifier
-                )
 
-        # 9) 트레이드 파라미터 계산
+        # 12) 트레이드 파라미터 계산
         trade_params_result: Optional[TradeParams] = None
         if signal != "NEUTRAL":
             trade_params_result = calculate_trade_params(df, signal, levels)
 
-        # 10) 지표 스냅샷 생성 (예측 엔진용)
+        # 13) 지표 스냅샷 생성
         indicator_snapshot = self._build_indicator_snapshot(df)
 
-        # 11) 요약 생성
-        summary = self._generate_summary(signal, confidence, indicator_results, candle_results, chart_results, volume_results, mtf_result, trade_params_result)
+        # 14) 요약 생성
+        summary = self._generate_summary(
+            signal, confidence, indicator_results, candle_results,
+            chart_results, volume_results, futures_results, mtf_result, trade_params_result
+        )
 
         return TradeSignal(
             symbol=symbol,
@@ -199,6 +242,11 @@ class SignalEngine:
                  "value": round(r.value, 4), "description": r.description}
                 for r in volume_results
             ],
+            futures_signals=[
+                {"name": r.name, "signal": r.signal, "strength": round(r.strength, 2),
+                 "value": round(r.value, 4), "description": r.description}
+                for r in futures_results
+            ],
             summary=summary,
             timestamp=datetime.now(timezone.utc).isoformat(),
             trade_params=trade_params_result.to_dict() if trade_params_result else None,
@@ -206,6 +254,40 @@ class SignalEngine:
             price_levels=levels.to_dict(),
             indicator_snapshot=indicator_snapshot,
         )
+
+    def _apply_market_context(self, signal: str, confidence: float) -> float:
+        """시장 맥락 보정 (알트코인에만 적용)"""
+        ctx = self._market_context
+        if not ctx:
+            return confidence
+
+        modifier = 0.0
+
+        # Fear & Greed 보정
+        fg = ctx.get("fear_greed")
+        if fg is not None:
+            if fg <= 20:  # Extreme Fear → 롱 편향
+                if "LONG" in signal:
+                    modifier += 0.05
+                elif "SHORT" in signal:
+                    modifier -= 0.03
+            elif fg >= 80:  # Extreme Greed → 숏 편향
+                if "SHORT" in signal:
+                    modifier += 0.05
+                elif "LONG" in signal:
+                    modifier -= 0.03
+
+        # 시장 모멘텀 보정
+        momentum = ctx.get("market_momentum")
+        if momentum is not None:
+            if momentum >= 0.8:  # 과열 → 숏 편향
+                if "SHORT" in signal:
+                    modifier += 0.03
+            elif momentum <= 0.2:  # 과매도 → 롱 편향
+                if "LONG" in signal:
+                    modifier += 0.03
+
+        return max(0.0, min(1.0, confidence + modifier))
 
     def _build_indicator_snapshot(self, df: pd.DataFrame) -> dict:
         """예측 엔진에 전달할 지표 스냅샷 생성."""
@@ -216,12 +298,10 @@ class SignalEngine:
         volume = df["volume"]
 
         try:
-            # RSI(14)
             rsi = ta.rsi(close, length=14)
             if rsi is not None and not rsi.empty:
                 snapshot["rsi"] = round(float(rsi.dropna().iloc[-1]), 2)
 
-            # MACD 히스토그램 3봉 기울기
             macd_df = ta.macd(close, fast=12, slow=26, signal=9)
             if macd_df is not None and not macd_df.empty:
                 hist_col = [c for c in macd_df.columns if "MACDh" in c or "Histogram" in c.replace("_", "")]
@@ -233,7 +313,6 @@ class SignalEngine:
                         slope = (float(hist.iloc[-1]) - float(hist.iloc[-3])) / 2
                         snapshot["macd_hist_slope"] = round(slope, 6)
 
-            # 볼린저 밴드 내 위치 (0=하단, 1=상단)
             bbands = ta.bbands(close, length=20, std=2.0)
             if bbands is not None and not bbands.empty:
                 upper_col = [c for c in bbands.columns if "BBU" in c]
@@ -245,14 +324,12 @@ class SignalEngine:
                         bb_pos = (float(close.iloc[-1]) - bbl) / (bbu - bbl)
                         snapshot["bb_position"] = round(max(0.0, min(1.0, bb_pos)), 3)
 
-            # 거래량 비율: 현재 / 20봉 평균
             vol_ma = volume.rolling(20, min_periods=10).mean()
             if vol_ma is not None and not vol_ma.empty:
                 avg_vol = float(vol_ma.dropna().iloc[-1])
                 if avg_vol > 0:
                     snapshot["volume_ratio"] = round(float(volume.iloc[-1]) / avg_vol, 3)
 
-            # ATR(14) - 예측에서 직접 사용
             atr = ta.atr(high, low, close, length=14)
             if atr is not None and not atr.empty:
                 snapshot["atr"] = round(float(atr.dropna().iloc[-1]), 6)
@@ -299,6 +376,7 @@ class SignalEngine:
         candles: list,
         charts: list,
         volumes: list,
+        futures: list,
         mtf: Optional[MTFConfirmation] = None,
         trade_params: Optional[TradeParams] = None,
     ) -> str:
@@ -313,11 +391,9 @@ class SignalEngine:
 
         parts = [f"종합 판단: {signal_kr.get(signal, signal)} (신뢰도 {confidence:.0%})"]
 
-        # MTF 정보
         if mtf:
             parts.append(f"상위TF({mtf.higher_tf}): {mtf.description}")
 
-        # 주요 근거
         long_reasons = []
         short_reasons = []
 
@@ -345,12 +421,17 @@ class SignalEngine:
             elif vol.signal == "short":
                 short_reasons.append(vol.description)
 
-        if long_reasons:
-            parts.append("롱 근거: " + " / ".join(long_reasons[:3]))
-        if short_reasons:
-            parts.append("숏 근거: " + " / ".join(short_reasons[:3]))
+        for f in futures:
+            if f.signal == "long" and f.strength >= 0.4:
+                long_reasons.append(f.description)
+            elif f.signal == "short" and f.strength >= 0.4:
+                short_reasons.append(f.description)
 
-        # SL/TP 정보
+        if long_reasons:
+            parts.append("롱 근거: " + " / ".join(long_reasons[:4]))
+        if short_reasons:
+            parts.append("숏 근거: " + " / ".join(short_reasons[:4]))
+
         if trade_params:
             direction = "롱" if trade_params.position_direction == "long" else "숏"
             parts.append(

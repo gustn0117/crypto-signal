@@ -137,5 +137,50 @@ class AsyncBinanceClient:
         df.set_index("timestamp", inplace=True)
         return df
 
+    async def fetch_funding_rate(self, symbol: str) -> float | None:
+        """현재 펀딩레이트 조회"""
+        await self.ensure_markets()
+        try:
+            funding = await self.exchange.fetch_funding_rate(symbol)
+            return funding.get("fundingRate")
+        except Exception:
+            return None
+
+    async def fetch_open_interest_change(self, symbol: str) -> dict | None:
+        """미결제약정 변화율 조회"""
+        await self.ensure_markets()
+        try:
+            oi = await self.exchange.fetch_open_interest(symbol)
+            oi_value = oi.get("openInterestAmount") or oi.get("openInterestValue", 0)
+            if not oi_value:
+                return None
+
+            # 현재 가격과 24h 변화율
+            ticker = await self.exchange.fetch_ticker(symbol)
+            price_change = ticker.get("percentage", 0) or 0
+
+            # OI 히스토리가 없으므로 현재값만 반환하고 스캐너에서 이전값 비교
+            return {
+                "current": float(oi_value),
+                "previous": None,
+                "price_change_pct": float(price_change),
+            }
+        except Exception:
+            return None
+
+    async def fetch_long_short_ratio(self, symbol: str) -> float | None:
+        """Long/Short Ratio 조회 (Binance 전용 API)"""
+        await self.ensure_markets()
+        try:
+            # ccxt의 Binance 전용 메서드
+            base = symbol.split("/")[0] if "/" in symbol else symbol.replace("USDT", "")
+            params = {"symbol": f"{base}USDT", "period": "5m", "limit": 1}
+            response = await self.exchange.fapiPublicGetGlobalLongShortAccountRatio(params)
+            if response and len(response) > 0:
+                return float(response[0].get("longShortRatio", 1.0))
+        except Exception:
+            pass
+        return None
+
     async def close(self):
         await self.exchange.close()

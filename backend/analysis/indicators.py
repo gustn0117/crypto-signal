@@ -1,12 +1,12 @@
 """
 기술적 지표 분석 모듈
-RSI, MACD, 볼린저밴드, EMA, Stochastic 등 기본 지표 계산
+RSI, MACD, 볼린저밴드, EMA, Stochastic, ADX, VWAP, Ichimoku,
+Williams %R, CCI, MFI, CMF 등 12개 지표 계산
 """
 import logging
 import pandas as pd
 import pandas_ta as ta
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,6 @@ def analyze_rsi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
     try:
         rsi = ta.rsi(df["close"], length=period)
         if rsi is None or rsi.empty:
-            logger.warning("RSI 계산 결과 없음 (데이터: %d행)", len(df))
             return IndicatorResult("RSI", "neutral", 0.0, 0.0, "데이터 부족")
 
         current_rsi = rsi.iloc[-1]
@@ -47,7 +46,7 @@ def analyze_rsi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
         return IndicatorResult("RSI", signal, min(strength, 1.0), current_rsi, desc)
     except Exception as e:
         logger.error("RSI 분석 오류: %s", e, exc_info=True)
-        return IndicatorResult("RSI", "neutral", 0.0, 0.0, f"분석 오류")
+        return IndicatorResult("RSI", "neutral", 0.0, 0.0, "분석 오류")
 
 
 def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
@@ -55,7 +54,6 @@ def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
     try:
         macd_df = ta.macd(df["close"], fast=12, slow=26, signal=9)
         if macd_df is None or macd_df.empty:
-            logger.warning("MACD 계산 결과 없음 (데이터: %d행)", len(df))
             return IndicatorResult("MACD", "neutral", 0.0, 0.0, "데이터 부족")
 
         macd_line = macd_df.iloc[:, 0]
@@ -68,12 +66,10 @@ def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
         prev_signal = signal_line.iloc[-2]
         curr_hist = histogram.iloc[-1]
 
-        # 골든 크로스
         if prev_macd <= prev_signal and curr_macd > curr_signal:
             signal = "long"
             strength = 0.8
             desc = "MACD 골든크로스 발생 (강한 롱 시그널)"
-        # 데드 크로스
         elif prev_macd >= prev_signal and curr_macd < curr_signal:
             signal = "short"
             strength = 0.8
@@ -94,7 +90,7 @@ def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
         return IndicatorResult("MACD", signal, strength, curr_macd, desc)
     except Exception as e:
         logger.error("MACD 분석 오류: %s", e, exc_info=True)
-        return IndicatorResult("MACD", "neutral", 0.0, 0.0, f"분석 오류")
+        return IndicatorResult("MACD", "neutral", 0.0, 0.0, "분석 오류")
 
 
 def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0) -> IndicatorResult:
@@ -102,7 +98,6 @@ def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0
     try:
         bbands = ta.bbands(df["close"], length=period, std=std)
         if bbands is None or bbands.empty:
-            logger.warning("BB 계산 결과 없음 (데이터: %d행)", len(df))
             return IndicatorResult("BB", "neutral", 0.0, 0.0, "데이터 부족")
 
         lower = bbands.iloc[:, 0].iloc[-1]
@@ -118,19 +113,19 @@ def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0
         if position <= 0.05:
             signal = "long"
             strength = 0.9
-            desc = f"가격이 하단밴드 터치 (강한 반등 기대)"
+            desc = "가격이 하단밴드 터치 (강한 반등 기대)"
         elif position <= 0.2:
             signal = "long"
             strength = 0.5
-            desc = f"가격이 하단밴드 근접"
+            desc = "가격이 하단밴드 근접"
         elif position >= 0.95:
             signal = "short"
             strength = 0.9
-            desc = f"가격이 상단밴드 터치 (하락 전환 가능)"
+            desc = "가격이 상단밴드 터치 (하락 전환 가능)"
         elif position >= 0.8:
             signal = "short"
             strength = 0.5
-            desc = f"가격이 상단밴드 근접"
+            desc = "가격이 상단밴드 근접"
         else:
             signal = "neutral"
             strength = 0.0
@@ -139,7 +134,7 @@ def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0
         return IndicatorResult("BB", signal, strength, current_price, desc)
     except Exception as e:
         logger.error("BB 분석 오류: %s", e, exc_info=True)
-        return IndicatorResult("BB", "neutral", 0.0, 0.0, f"분석 오류")
+        return IndicatorResult("BB", "neutral", 0.0, 0.0, "분석 오류")
 
 
 def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int = 21) -> IndicatorResult:
@@ -149,7 +144,6 @@ def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int 
         ema_long = ta.ema(df["close"], length=long_period)
 
         if ema_short is None or ema_long is None:
-            logger.warning("EMA 계산 결과 없음 (데이터: %d행)", len(df))
             return IndicatorResult("EMA", "neutral", 0.0, 0.0, "데이터 부족")
 
         curr_short = ema_short.iloc[-1]
@@ -177,7 +171,7 @@ def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int 
         return IndicatorResult("EMA", signal, strength, curr_short, desc)
     except Exception as e:
         logger.error("EMA 분석 오류: %s", e, exc_info=True)
-        return IndicatorResult("EMA", "neutral", 0.0, 0.0, f"분석 오류")
+        return IndicatorResult("EMA", "neutral", 0.0, 0.0, "분석 오류")
 
 
 def analyze_stochastic(df: pd.DataFrame) -> IndicatorResult:
@@ -185,7 +179,6 @@ def analyze_stochastic(df: pd.DataFrame) -> IndicatorResult:
     try:
         stoch = ta.stoch(df["high"], df["low"], df["close"])
         if stoch is None or stoch.empty:
-            logger.warning("STOCH 계산 결과 없음 (데이터: %d행)", len(df))
             return IndicatorResult("STOCH", "neutral", 0.0, 0.0, "데이터 부족")
 
         k = stoch.iloc[:, 0].iloc[-1]
@@ -207,4 +200,229 @@ def analyze_stochastic(df: pd.DataFrame) -> IndicatorResult:
         return IndicatorResult("STOCH", signal, strength, k, desc)
     except Exception as e:
         logger.error("STOCH 분석 오류: %s", e, exc_info=True)
-        return IndicatorResult("STOCH", "neutral", 0.0, 0.0, f"분석 오류")
+        return IndicatorResult("STOCH", "neutral", 0.0, 0.0, "분석 오류")
+
+
+# ─── 새 지표 7개 ──────────────────────────────────────────
+
+
+def analyze_adx(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+    """ADX (Average Directional Index) — 추세 강도"""
+    try:
+        adx_df = ta.adx(df["high"], df["low"], df["close"], length=period)
+        if adx_df is None or adx_df.empty:
+            return IndicatorResult("ADX", "neutral", 0.0, 0.0, "데이터 부족")
+
+        adx_col = [c for c in adx_df.columns if "ADX" in c and "DM" not in c]
+        dmp_col = [c for c in adx_df.columns if "DMP" in c]
+        dmn_col = [c for c in adx_df.columns if "DMN" in c]
+
+        if not adx_col or not dmp_col or not dmn_col:
+            return IndicatorResult("ADX", "neutral", 0.0, 0.0, "컬럼 없음")
+
+        adx_val = float(adx_df[adx_col[0]].dropna().iloc[-1])
+        dmp = float(adx_df[dmp_col[0]].dropna().iloc[-1])
+        dmn = float(adx_df[dmn_col[0]].dropna().iloc[-1])
+
+        if adx_val < 20:
+            return IndicatorResult("ADX", "neutral", 0.0, adx_val,
+                                   f"ADX {adx_val:.1f} - 추세 약함 (횡보)")
+
+        strength = min((adx_val - 20) / 40, 1.0)
+        if dmp > dmn:
+            return IndicatorResult("ADX", "long", strength, adx_val,
+                                   f"ADX {adx_val:.1f} - 강한 상승 추세 (DI+ {dmp:.1f} > DI- {dmn:.1f})")
+        else:
+            return IndicatorResult("ADX", "short", strength, adx_val,
+                                   f"ADX {adx_val:.1f} - 강한 하락 추세 (DI- {dmn:.1f} > DI+ {dmp:.1f})")
+    except Exception as e:
+        logger.error("ADX 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("ADX", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_vwap(df: pd.DataFrame) -> IndicatorResult:
+    """VWAP (Volume Weighted Average Price) — 기관 매매 기준선"""
+    try:
+        vwap = ta.vwap(df["high"], df["low"], df["close"], df["volume"])
+        if vwap is None or vwap.empty:
+            return IndicatorResult("VWAP", "neutral", 0.0, 0.0, "데이터 부족")
+
+        current_price = df["close"].iloc[-1]
+        current_vwap = float(vwap.dropna().iloc[-1])
+        deviation = (current_price - current_vwap) / current_vwap * 100
+
+        if deviation > 2.0:
+            signal = "short"
+            strength = min(deviation / 5.0, 0.8)
+            desc = f"VWAP 위 +{deviation:.1f}% — 과매수 (VWAP 회귀 가능)"
+        elif deviation < -2.0:
+            signal = "long"
+            strength = min(abs(deviation) / 5.0, 0.8)
+            desc = f"VWAP 아래 {deviation:.1f}% — 과매도 (VWAP 회귀 가능)"
+        elif deviation > 0.5:
+            signal = "long"
+            strength = 0.3
+            desc = f"VWAP 위 +{deviation:.1f}% — 약한 상승 모멘텀"
+        elif deviation < -0.5:
+            signal = "short"
+            strength = 0.3
+            desc = f"VWAP 아래 {deviation:.1f}% — 약한 하락 모멘텀"
+        else:
+            signal = "neutral"
+            strength = 0.0
+            desc = f"VWAP 근접 ({deviation:+.1f}%)"
+
+        return IndicatorResult("VWAP", signal, strength, current_vwap, desc)
+    except Exception as e:
+        logger.error("VWAP 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("VWAP", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_ichimoku(df: pd.DataFrame) -> IndicatorResult:
+    """Ichimoku Cloud — 구름대 위치 기반 추세 판단"""
+    try:
+        ichi = ta.ichimoku(df["high"], df["low"], df["close"])
+        if ichi is None or len(ichi) < 2:
+            return IndicatorResult("Ichimoku", "neutral", 0.0, 0.0, "데이터 부족")
+
+        ichi_df = ichi[0]
+        if ichi_df is None or ichi_df.empty:
+            return IndicatorResult("Ichimoku", "neutral", 0.0, 0.0, "데이터 부족")
+
+        current_price = df["close"].iloc[-1]
+
+        span_a_col = [c for c in ichi_df.columns if "ISA" in c]
+        span_b_col = [c for c in ichi_df.columns if "ISB" in c]
+
+        if not span_a_col or not span_b_col:
+            return IndicatorResult("Ichimoku", "neutral", 0.0, 0.0, "컬럼 없음")
+
+        span_a = float(ichi_df[span_a_col[0]].dropna().iloc[-1])
+        span_b = float(ichi_df[span_b_col[0]].dropna().iloc[-1])
+        cloud_top = max(span_a, span_b)
+        cloud_bottom = min(span_a, span_b)
+
+        if current_price > cloud_top:
+            dist = (current_price - cloud_top) / cloud_top * 100
+            strength = min(0.4 + dist * 0.1, 0.8)
+            return IndicatorResult("Ichimoku", "long", strength, current_price,
+                                   f"구름대 위 — 상승 추세 (+{dist:.1f}%)")
+        elif current_price < cloud_bottom:
+            dist = (cloud_bottom - current_price) / cloud_bottom * 100
+            strength = min(0.4 + dist * 0.1, 0.8)
+            return IndicatorResult("Ichimoku", "short", strength, current_price,
+                                   f"구름대 아래 — 하락 추세 (-{dist:.1f}%)")
+        else:
+            return IndicatorResult("Ichimoku", "neutral", 0.2, current_price,
+                                   "구름대 내부 — 방향 불확실")
+    except Exception as e:
+        logger.error("Ichimoku 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("Ichimoku", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_williams_r(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+    """Williams %R — 과매수/과매도 오실레이터"""
+    try:
+        willr = ta.willr(df["high"], df["low"], df["close"], length=period)
+        if willr is None or willr.empty:
+            return IndicatorResult("W%R", "neutral", 0.0, 0.0, "데이터 부족")
+
+        val = float(willr.dropna().iloc[-1])
+
+        if val <= -80:
+            strength = min((-80 - val) / 20 * 0.5 + 0.5, 1.0)
+            return IndicatorResult("W%R", "long", strength, val,
+                                   f"W%R {val:.1f} - 과매도 구간 (반등 기대)")
+        elif val >= -20:
+            strength = min((val + 20) / 20 * 0.5 + 0.5, 1.0)
+            return IndicatorResult("W%R", "short", strength, val,
+                                   f"W%R {val:.1f} - 과매수 구간 (하락 가능)")
+        else:
+            return IndicatorResult("W%R", "neutral", 0.0, val,
+                                   f"W%R {val:.1f} - 중립 구간")
+    except Exception as e:
+        logger.error("W%%R 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("W%R", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_cci(df: pd.DataFrame, period: int = 20) -> IndicatorResult:
+    """CCI (Commodity Channel Index) — 가격 이탈 감지"""
+    try:
+        cci = ta.cci(df["high"], df["low"], df["close"], length=period)
+        if cci is None or cci.empty:
+            return IndicatorResult("CCI", "neutral", 0.0, 0.0, "데이터 부족")
+
+        val = float(cci.dropna().iloc[-1])
+
+        if val <= -200:
+            return IndicatorResult("CCI", "long", 0.9, val,
+                                   f"CCI {val:.0f} - 극단적 과매도 (강한 반등 기대)")
+        elif val <= -100:
+            return IndicatorResult("CCI", "long", 0.6, val,
+                                   f"CCI {val:.0f} - 과매도 구간")
+        elif val >= 200:
+            return IndicatorResult("CCI", "short", 0.9, val,
+                                   f"CCI {val:.0f} - 극단적 과매수 (강한 하락 가능)")
+        elif val >= 100:
+            return IndicatorResult("CCI", "short", 0.6, val,
+                                   f"CCI {val:.0f} - 과매수 구간")
+        else:
+            return IndicatorResult("CCI", "neutral", 0.0, val,
+                                   f"CCI {val:.0f} - 중립 구간")
+    except Exception as e:
+        logger.error("CCI 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("CCI", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_mfi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+    """MFI (Money Flow Index) — 거래량 가중 RSI"""
+    try:
+        mfi = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=period)
+        if mfi is None or mfi.empty:
+            return IndicatorResult("MFI", "neutral", 0.0, 0.0, "데이터 부족")
+
+        val = float(mfi.dropna().iloc[-1])
+
+        if val <= 20:
+            strength = min((20 - val) / 20 * 0.5 + 0.5, 1.0)
+            return IndicatorResult("MFI", "long", strength, val,
+                                   f"MFI {val:.1f} - 자금 유출 과도 (반등 기대)")
+        elif val >= 80:
+            strength = min((val - 80) / 20 * 0.5 + 0.5, 1.0)
+            return IndicatorResult("MFI", "short", strength, val,
+                                   f"MFI {val:.1f} - 자금 유입 과도 (하락 가능)")
+        else:
+            return IndicatorResult("MFI", "neutral", 0.0, val,
+                                   f"MFI {val:.1f} - 중립 구간")
+    except Exception as e:
+        logger.error("MFI 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("MFI", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_cmf(df: pd.DataFrame, period: int = 20) -> IndicatorResult:
+    """CMF (Chaikin Money Flow) — 자금 유입/유출 방향"""
+    try:
+        cmf = ta.cmf(df["high"], df["low"], df["close"], df["volume"], length=period)
+        if cmf is None or cmf.empty:
+            return IndicatorResult("CMF", "neutral", 0.0, 0.0, "데이터 부족")
+
+        val = float(cmf.dropna().iloc[-1])
+
+        if val > 0.15:
+            return IndicatorResult("CMF", "long", min(val / 0.3, 0.9), val,
+                                   f"CMF {val:.3f} - 강한 매수세 유입")
+        elif val > 0.05:
+            return IndicatorResult("CMF", "long", 0.4, val,
+                                   f"CMF {val:.3f} - 약한 매수세")
+        elif val < -0.15:
+            return IndicatorResult("CMF", "short", min(abs(val) / 0.3, 0.9), val,
+                                   f"CMF {val:.3f} - 강한 매도세 유출")
+        elif val < -0.05:
+            return IndicatorResult("CMF", "short", 0.4, val,
+                                   f"CMF {val:.3f} - 약한 매도세")
+        else:
+            return IndicatorResult("CMF", "neutral", 0.0, val,
+                                   f"CMF {val:.3f} - 중립")
+    except Exception as e:
+        logger.error("CMF 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("CMF", "neutral", 0.0, 0.0, "분석 오류")

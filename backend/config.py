@@ -12,11 +12,15 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", 8000))
 
 # Scanner
-SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", 60))
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", 30))
 MIN_VOLUME_USDT = float(os.getenv("MIN_VOLUME_USDT", 1_000_000))
-SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", 10))
+SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", 15))
 
-# 고정 스캔 대상 (안정적 대형 코인 10개)
+# 동적 심볼 스캔 설정
+DYNAMIC_SYMBOLS = os.getenv("DYNAMIC_SYMBOLS", "true").lower() == "true"
+SCAN_TOP_N = int(os.getenv("SCAN_TOP_N", 30))
+
+# 고정 스캔 대상 (항상 포함되는 코어 코인)
 SCAN_SYMBOLS = [
     "BTC/USDT",
     "ETH/USDT",
@@ -29,6 +33,9 @@ SCAN_SYMBOLS = [
     "MATIC/USDT",
     "LINK/USDT",
 ]
+
+# 멀티 타임프레임 스캔 설정
+SCAN_TIMEFRAMES = ["15m", "1h", "4h"]
 
 # Supabase (PostgreSQL)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://api.hsweb.pics")

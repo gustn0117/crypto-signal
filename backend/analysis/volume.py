@@ -1,6 +1,6 @@
 """
 거래량 분석 모듈
-거래량 급증, OBV, VWAP 등
+거래량 급증, OBV, 가격-거래량 다이버전스, VWAP 이탈, 거래량 프로파일, 거래량 MA 크로스
 """
 import logging
 import pandas as pd
@@ -21,29 +21,23 @@ class VolumeResult:
 
 
 def analyze_volume(df: pd.DataFrame) -> list[VolumeResult]:
-    """종합 거래량 분석"""
+    """종합 거래량 분석 (6개 분석)"""
     results = []
 
-    try:
-        vol_surge = _detect_volume_surge(df)
-        if vol_surge:
-            results.append(vol_surge)
-    except Exception as e:
-        logger.error("거래량 급증 분석 오류: %s", e, exc_info=True)
-
-    try:
-        obv_result = _analyze_obv(df)
-        if obv_result:
-            results.append(obv_result)
-    except Exception as e:
-        logger.error("OBV 분석 오류: %s", e, exc_info=True)
-
-    try:
-        divergence = _detect_price_volume_divergence(df)
-        if divergence:
-            results.append(divergence)
-    except Exception as e:
-        logger.error("거래량 다이버전스 분석 오류: %s", e, exc_info=True)
+    for analyzer in [
+        _detect_volume_surge,
+        _analyze_obv,
+        _detect_price_volume_divergence,
+        _analyze_vwap_deviation,
+        _analyze_volume_profile,
+        _analyze_volume_ma_cross,
+    ]:
+        try:
+            result = analyzer(df)
+            if result:
+                results.append(result)
+        except Exception as e:
+            logger.error("%s 분석 오류: %s", analyzer.__name__, e, exc_info=True)
 
     return results
 
@@ -136,6 +130,130 @@ def _detect_price_volume_divergence(df: pd.DataFrame, lookback: int = 5) -> Volu
             strength=0.65,
             value=vol_change,
             description=f"가격 하락({price_change:.1%}) + 거래량 감소({vol_change:.1%}) - 하락 약화"
+        )
+
+    return None
+
+
+def _analyze_vwap_deviation(df: pd.DataFrame) -> VolumeResult | None:
+    """VWAP 이탈 — 가격이 VWAP 위/아래로 크게 벗어났을 때"""
+    if len(df) < 20:
+        return None
+
+    vwap = ta.vwap(df["high"], df["low"], df["close"], df["volume"])
+    if vwap is None or vwap.empty:
+        return None
+
+    current_price = df["close"].iloc[-1]
+    current_vwap = float(vwap.dropna().iloc[-1])
+
+    if current_vwap == 0:
+        return None
+
+    deviation = (current_price - current_vwap) / current_vwap * 100
+
+    # 큰 이탈만 시그널 (±3% 이상)
+    if deviation > 3.0:
+        strength = min(deviation / 6.0, 0.8)
+        return VolumeResult(
+            name="VWAP 이탈",
+            signal="short",
+            strength=strength,
+            value=deviation,
+            description=f"가격이 VWAP 위 +{deviation:.1f}% — 평균 회귀 가능 (숏)"
+        )
+    elif deviation < -3.0:
+        strength = min(abs(deviation) / 6.0, 0.8)
+        return VolumeResult(
+            name="VWAP 이탈",
+            signal="long",
+            strength=strength,
+            value=deviation,
+            description=f"가격이 VWAP 아래 {deviation:.1f}% — 평균 회귀 가능 (롱)"
+        )
+
+    return None
+
+
+def _analyze_volume_profile(df: pd.DataFrame, lookback: int = 50) -> VolumeResult | None:
+    """거래량 프로파일 — 고점/저점 구간의 거래량 분포"""
+    if len(df) < lookback:
+        return None
+
+    recent = df.iloc[-lookback:]
+    current_price = recent["close"].iloc[-1]
+
+    # 가격 범위를 10등분
+    price_range = recent["high"].max() - recent["low"].min()
+    if price_range == 0:
+        return None
+
+    # 현재 가격이 전체 범위의 어디에 있는지
+    position = (current_price - recent["low"].min()) / price_range
+
+    # 상위 30% / 하위 30% 구간 거래량 비교
+    high_threshold = recent["low"].min() + price_range * 0.7
+    low_threshold = recent["low"].min() + price_range * 0.3
+
+    high_zone_vol = recent[recent["close"] >= high_threshold]["volume"].sum()
+    low_zone_vol = recent[recent["close"] <= low_threshold]["volume"].sum()
+    total_vol = recent["volume"].sum()
+
+    if total_vol == 0:
+        return None
+
+    high_ratio = high_zone_vol / total_vol
+    low_ratio = low_zone_vol / total_vol
+
+    # 현재 가격이 저거래량 구간에 있으면 브레이크아웃 가능
+    if position > 0.7 and high_ratio < 0.15:
+        return VolumeResult(
+            name="거래량 프로파일",
+            signal="long",
+            strength=0.5,
+            value=high_ratio,
+            description=f"고점 구간 저거래량 ({high_ratio:.0%}) — 저항 약함 (브레이크아웃 가능)"
+        )
+    elif position < 0.3 and low_ratio < 0.15:
+        return VolumeResult(
+            name="거래량 프로파일",
+            signal="short",
+            strength=0.5,
+            value=low_ratio,
+            description=f"저점 구간 저거래량 ({low_ratio:.0%}) — 지지 약함 (브레이크다운 가능)"
+        )
+
+    return None
+
+
+def _analyze_volume_ma_cross(df: pd.DataFrame, short_period: int = 5, long_period: int = 20) -> VolumeResult | None:
+    """거래량 이동평균 크로스 — 단기 vol MA > 장기 vol MA"""
+    if len(df) < long_period + 2:
+        return None
+
+    vol = df["volume"]
+    vol_short = vol.rolling(short_period).mean()
+    vol_long = vol.rolling(long_period).mean()
+
+    curr_short = vol_short.iloc[-1]
+    prev_short = vol_short.iloc[-2]
+    curr_long = vol_long.iloc[-1]
+    prev_long = vol_long.iloc[-2]
+
+    if pd.isna(curr_short) or pd.isna(curr_long) or pd.isna(prev_short) or pd.isna(prev_long):
+        return None
+
+    # 골든크로스: 단기 > 장기 전환
+    if prev_short <= prev_long and curr_short > curr_long:
+        is_bullish = df["close"].iloc[-1] > df["close"].iloc[-2]
+        signal = "long" if is_bullish else "short"
+        ratio = curr_short / curr_long if curr_long > 0 else 1.0
+        return VolumeResult(
+            name="거래량 MA 크로스",
+            signal=signal,
+            strength=min(ratio / 2.0, 0.7),
+            value=ratio,
+            description=f"거래량 MA{short_period} > MA{long_period} ({ratio:.1f}배) — 거래 활성화"
         )
 
     return None

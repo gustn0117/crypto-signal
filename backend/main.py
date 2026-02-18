@@ -1,6 +1,6 @@
 """
-FastAPI 메인 서버
-REST API + WebSocket 엔드포인트
+FastAPI 메인 서버 (v2)
+REST API + WebSocket + 멀티TF 스캔 + 선물 데이터 + DB 알림 + 시장 맥락
 """
 import asyncio
 import json
@@ -18,14 +18,16 @@ from config import (
     HOST, PORT, SCAN_INTERVAL_SECONDS, TIMEFRAMES, DEFAULT_TIMEFRAME,
     ALLOWED_ORIGINS, LOG_LEVEL, LOG_DIR, HIGHER_TF_MAP,
     ALERT_ENABLED, ALERT_MIN_CONFIDENCE, ALERT_SIGNAL_TYPES, ALERT_COOLDOWN_MINUTES,
-    ANALYSIS_CANDLE_LIMIT, SUPABASE_SCHEMA, SCAN_SYMBOLS,
+    ANALYSIS_CANDLE_LIMIT, SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES,
     BACKFILL_DAYS, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
 )
 from exchange import AsyncBinanceClient
 from scanner import MarketScanner
 from analysis.signal_engine import SignalEngine
 from analysis.regime import detect_regime
-from db import Database, CandleRepo, SignalRepo, SignalTrackRepo, PredictionRepo
+from analysis.funding import get_futures_signals
+from analysis.market_context import build_market_context
+from db import Database, CandleRepo, SignalRepo, SignalTrackRepo, PredictionRepo, AlertRepo
 from data_collector import DataCollector
 from analysis.prediction import generate_prediction
 from analysis.self_learning import SelfLearningEngine
@@ -44,22 +46,29 @@ candle_repo: CandleRepo | None = None
 signal_repo: SignalRepo | None = None
 track_repo: SignalTrackRepo | None = None
 prediction_repo: PredictionRepo | None = None
+alert_repo: AlertRepo | None = None
 learning_engine: SelfLearningEngine | None = None
 
 # WebSocket 연결 관리
 connected_clients: List[WebSocket] = []
 client_subscriptions: Dict[WebSocket, Optional[dict]] = {}
 
-# 알림 저장소 (인메모리)
-alerts_store: List[dict] = []
-alert_cooldowns: Dict[str, str] = {}  # "symbol_signal" -> last_alert_iso
-ALERTS_MAX = 200
-
-# 런타임 알림 설정 (config에서 초기화, POST로 변경 가능)
+# 런타임 알림 설정
 _alert_enabled = ALERT_ENABLED
 _alert_min_confidence = ALERT_MIN_CONFIDENCE
 _alert_signal_types = list(ALERT_SIGNAL_TYPES)
 _alert_cooldown_minutes = ALERT_COOLDOWN_MINUTES
+
+# 시장 맥락 캐시
+_market_context: dict = {}
+
+# OI 히스토리 캐시 (심볼 -> 이전 OI 값)
+_oi_history: Dict[str, float] = {}
+
+# 배치 티커 캐시
+_ticker_cache: Dict[str, dict] = {}
+_ticker_cache_at: Optional[datetime] = None
+TICKER_CACHE_TTL = 15  # 15초
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -70,7 +79,6 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 def _validate_timeframe(timeframe: str) -> str:
-    """타임프레임 검증"""
     if timeframe not in TIMEFRAMES:
         raise HTTPException(
             status_code=400,
@@ -92,8 +100,26 @@ async def _broadcast_ws(message: str):
         client_subscriptions.pop(ws, None)
 
 
+async def _refresh_ticker_cache():
+    """배치 티커 캐시 갱신 (전체 심볼 한 번에)"""
+    global _ticker_cache, _ticker_cache_at
+    now = datetime.now(timezone.utc)
+    if _ticker_cache_at and (now - _ticker_cache_at).total_seconds() < TICKER_CACHE_TTL:
+        return
+    try:
+        await async_client.ensure_markets()
+        tickers = await async_client.exchange.fetch_tickers()
+        _ticker_cache = {}
+        for sym, t in tickers.items():
+            base = sym.split(":")[0] if ":" in sym else sym
+            _ticker_cache[base] = t
+        _ticker_cache_at = now
+    except Exception as e:
+        logger.warning("배치 티커 갱신 실패: %s", e)
+
+
 async def _push_transition_alert(transition: dict):
-    """상태 전환 기반 알림 생성 + WS push"""
+    """상태 전환 기반 알림 생성 + WS push + DB 저장"""
     if not _alert_enabled:
         return
 
@@ -102,14 +128,12 @@ async def _push_transition_alert(transition: dict):
     direction = transition.get("direction", "")
     symbol = transition.get("symbol", "")
 
-    # 쿨다운 체크 (트랙 단위)
+    # 쿨다운 체크 (DB 기반)
     cooldown_key = f"track_{transition.get('track_id', '')}"
-    if cooldown_key in alert_cooldowns:
-        last_time = datetime.fromisoformat(alert_cooldowns[cooldown_key])
-        if (now - last_time).total_seconds() < _alert_cooldown_minutes * 60:
+    if alert_repo:
+        is_cooling = await alert_repo.check_cooldown(cooldown_key, _alert_cooldown_minutes)
+        if is_cooling:
             return
-
-    alert_cooldowns[cooldown_key] = now.isoformat()
 
     # 알림 메시지 생성
     if to_state == "CONFIRMED":
@@ -120,7 +144,6 @@ async def _push_transition_alert(transition: dict):
         return
 
     alert = {
-        "id": len(alerts_store) + 1,
         "symbol": symbol,
         "signal": f"{'STRONG_LONG' if direction == 'LONG' else 'STRONG_SHORT'}",
         "confidence": transition.get("confidence", 0),
@@ -129,11 +152,14 @@ async def _push_transition_alert(transition: dict):
         "trade_params": None,
         "timestamp": now.isoformat(),
         "read": False,
-        "transition": to_state,
+        "transition": cooldown_key,
     }
-    alerts_store.insert(0, alert)
-    while len(alerts_store) > ALERTS_MAX:
-        alerts_store.pop()
+
+    # DB 저장
+    if alert_repo:
+        alert_id = await alert_repo.save_alert(alert)
+        if alert_id:
+            alert["id"] = alert_id
 
     await _broadcast_ws(json.dumps({"type": "alert", "data": alert}))
 
@@ -149,7 +175,6 @@ async def push_subscription_updates():
             timeframe = sub["timeframe"]
             df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
 
-            # 상위 TF 데이터 (DB에서 직접 읽기)
             higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
             higher_tf_df = None
             if higher_tf != timeframe:
@@ -158,7 +183,10 @@ async def push_subscription_updates():
                 except Exception as e:
                     logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
-            signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
+            # 선물 데이터 수집
+            futures_data = await get_futures_signals(async_client, symbol)
+
+            signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
             signal_data = signal.to_dict()
 
             # 트랙 데이터 병합
@@ -210,10 +238,8 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         logger.warning("자동 예측 스킵 (트레이드 파라미터 없음): %s", symbol)
         return
 
-    # 레짐 감지
     regime_result = detect_regime(df)
 
-    # S/R 레벨 추출
     sr_levels = []
     if signal.price_levels:
         for key in ("support_1", "support_2", "resistance_1", "resistance_2"):
@@ -221,7 +247,6 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
             if val:
                 sr_levels.append(val)
 
-    # 캘리브레이션: 과거 정확도 피드백
     cal = None
     stats = await prediction_repo.get_accuracy_stats(symbol=symbol)
     if stats["total_predictions"] >= 5:
@@ -229,6 +254,10 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
             "avg_accuracy": stats["avg_accuracy_score"],
             "count": stats["total_predictions"],
         }
+
+    # BTC 상관관계 (알트코인일 경우)
+    btc_signal = _market_context.get("btc_signal")
+    is_alt = symbol != "BTC/USDT"
 
     prediction_data = generate_prediction(
         signal_direction=signal.signal,
@@ -242,6 +271,8 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         regime=regime_result.regime,
         calibration=cal,
         sr_levels=sr_levels,
+        btc_signal_direction=btc_signal,
+        is_altcoin=is_alt,
     )
 
     tp = signal.trade_params or {}
@@ -268,7 +299,6 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
 
     logger.info("자동 예측 생성: %s #%d (레짐=%s)", symbol, pred_id, regime_result.regime)
 
-    # WS 브로드캐스트
     pred = await prediction_repo.get_prediction_by_id(pred_id)
     if pred and connected_clients:
         await _broadcast_ws(json.dumps({
@@ -277,19 +307,39 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         }))
 
 
-async def scheduled_scan():
-    """주기적 마켓 스캔"""
-    await scanner.scan_market(timeframe=DEFAULT_TIMEFRAME)
+async def scheduled_scan_tf(timeframe: str):
+    """특정 타임프레임 스캔"""
+    global _market_context
 
-    # 트랜지션 기반 알림 + 자동 예측 생성
+    await scanner.scan_market(timeframe=timeframe)
+
+    # 시장 맥락 갱신 (1h 스캔 시에만)
+    if timeframe == "1h":
+        try:
+            signals_1h = scanner.latest_signals.get("1h", [])
+            btc_ticker = None
+            all_tickers = []
+            await _refresh_ticker_cache()
+            btc_ticker = _ticker_cache.get("BTC/USDT")
+            all_tickers = [{"change_24h": t.get("percentage", 0)} for t in _ticker_cache.values()]
+
+            _market_context = await build_market_context(
+                latest_signals=signals_1h,
+                btc_ticker={"change_24h": btc_ticker.get("percentage", 0)} if btc_ticker else None,
+                all_tickers=all_tickers,
+            )
+            engine.set_market_context(_market_context)
+        except Exception as e:
+            logger.warning("시장 맥락 갱신 실패: %s", e)
+
+    # 트랜지션 알림 + 자동 예측
     for tr in (scanner.latest_transitions or []):
         try:
             if tr["to_state"] == "CONFIRMED":
                 await _push_transition_alert(tr)
-                # CONFIRMING → CONFIRMED 전환 시 자동 예측 생성
                 if tr.get("from_state") == "CONFIRMING":
                     try:
-                        await _auto_generate_prediction(tr["symbol"], DEFAULT_TIMEFRAME)
+                        await _auto_generate_prediction(tr["symbol"], timeframe)
                     except Exception as e:
                         logger.error("자동 예측 생성 실패 [%s]: %s", tr["symbol"], e)
             elif tr["to_state"] == "WEAKENING" and tr.get("from_state") == "CONFIRMED":
@@ -309,22 +359,25 @@ async def scheduled_scan():
                 except Exception:
                     pass
 
-    # scan_update 브로드캐스트 (10개 코인 전체)
+    # scan_update 브로드캐스트
     if connected_clients:
         await _broadcast_ws(json.dumps({
             "type": "scan_update",
-            "data": scanner.get_latest_signals()
+            "data": scanner.get_latest_signals(timeframe)
         }))
 
 
 async def update_prediction_progress():
-    """실시간 예측 진행 추적 (60초마다)."""
+    """실시간 예측 진행 추적 (배치 티커 사용)."""
     if not prediction_repo:
         return
     try:
         active = await prediction_repo.get_all_active_predictions()
         if not active:
             return
+
+        # 배치 티커 갱신 (1회 API 호출로 모든 심볼)
+        await _refresh_ticker_cache()
 
         tf_seconds = {
             "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
@@ -343,9 +396,10 @@ async def update_prediction_progress():
                 tp3 = pred["take_profit_3"]
                 atr = pred["atr"]
 
-                # 현재가 조회
-                await async_client.ensure_markets()
-                ticker = await async_client.exchange.fetch_ticker(symbol)
+                # 배치 캐시에서 현재가 조회
+                ticker = _ticker_cache.get(symbol)
+                if not ticker:
+                    continue
                 current_price = ticker.get("last", 0)
                 if not current_price:
                     continue
@@ -356,7 +410,7 @@ async def update_prediction_progress():
                 else:
                     pnl_pct = ((entry_price - current_price) / entry_price) * 100
 
-                # R:R 현재 비율
+                # R:R
                 risk = abs(entry_price - sl) if sl else atr
                 reward = abs(current_price - entry_price)
                 rr_current = (reward / risk) if risk > 0 else 0
@@ -368,7 +422,7 @@ async def update_prediction_progress():
                 elapsed = (now - created).total_seconds()
                 time_pct = min(elapsed / total_sec, 1.0) if total_sec > 0 else 1.0
 
-                # 경로 정확도 (현재가 vs 예측경로의 현재 시점)
+                # 경로 정확도
                 path_accuracy = 0.5
                 predicted_path = pred.get("predicted_path", [])
                 if predicted_path and atr > 0:
@@ -392,7 +446,7 @@ async def update_prediction_progress():
                     "current_price": current_price,
                 })
 
-                # 조기 종료 체크: SL 또는 TP3 도달
+                # 조기 종료 체크
                 if is_long:
                     hit_sl = current_price <= sl
                     hit_tp3 = current_price >= tp3
@@ -403,10 +457,7 @@ async def update_prediction_progress():
                 if hit_sl or hit_tp3:
                     try:
                         result = await _verify_single_prediction(pred)
-                        logger.info(
-                            "조기 검증 완료: %s #%d (%s)",
-                            symbol, pred["id"], "SL" if hit_sl else "TP3",
-                        )
+                        logger.info("조기 검증 완료: %s #%d (%s)", symbol, pred["id"], "SL" if hit_sl else "TP3")
                         if connected_clients:
                             await _broadcast_ws(json.dumps({
                                 "type": "prediction_verified",
@@ -418,7 +469,6 @@ async def update_prediction_progress():
             except Exception as e:
                 logger.debug("진행 추적 실패 [%s #%d]: %s", pred.get("symbol"), pred.get("id"), e)
 
-        # 진행 업데이트 WS 브로드캐스트
         if progress_updates and connected_clients:
             await _broadcast_ws(json.dumps({
                 "type": "prediction_progress",
@@ -476,7 +526,6 @@ async def _verify_single_prediction(prediction: dict) -> dict:
     if len(actual_candles) < 1:
         return prediction
 
-    # 실제 경로
     actual_path = []
     for ts, row in actual_candles.iterrows():
         actual_path.append({
@@ -484,7 +533,6 @@ async def _verify_single_prediction(prediction: dict) -> dict:
             "price": float(row["close"]),
         })
 
-    # MFE / MAE 계산
     if is_long:
         max_favorable = max(
             ((row["high"] - entry_price) / entry_price) * 100
@@ -506,7 +554,6 @@ async def _verify_single_prediction(prediction: dict) -> dict:
 
     final_price = float(actual_candles["close"].iloc[-1])
 
-    # 결과 분류
     if is_long:
         if actual_candles["low"].min() <= sl:
             result = "HIT_SL"
@@ -534,7 +581,6 @@ async def _verify_single_prediction(prediction: dict) -> dict:
         else:
             result = "WRONG"
 
-    # 정확도 점수: 예측 경로 vs 실제 경로
     predicted_path = prediction["predicted_path"]
     actual_map = {p["time"]: p["price"] for p in actual_path}
     scores = []
@@ -579,14 +625,20 @@ async def cleanup_expired_tracks():
         except Exception as e:
             logger.error("트랙 정리 실패: %s", e)
 
+    # 오래된 알림 정리
+    if alert_repo:
+        try:
+            await alert_repo.cleanup_old(keep_count=500)
+        except Exception as e:
+            logger.debug("알림 정리 실패: %s", e)
+
 
 async def run_self_learning():
-    """자기학습 실행 (6시간마다) - 지표 정확도 분석 및 가중치 자동 조정"""
+    """자기학습 실행 (6시간마다)"""
     if not learning_engine:
         return
     try:
         await learning_engine.run_learning_cycle()
-        # 학습 결과를 시그널 엔진에 반영
         weights = await learning_engine.get_adaptive_weights()
         engine.set_adaptive_weights(weights)
     except Exception as e:
@@ -594,7 +646,7 @@ async def run_self_learning():
 
 
 async def run_backfill():
-    """히스토리 백필 (서버 시작 시 1회 + 이후 24시간마다 증분)"""
+    """히스토리 백필"""
     try:
         collector = DataCollector(async_client, candle_repo)
         results = await collector.backfill_all(
@@ -615,7 +667,7 @@ async def run_backfill():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, learning_engine
+    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine
 
     # DB 초기화
     await database.connect()
@@ -623,13 +675,14 @@ async def lifespan(app: FastAPI):
     signal_repo = SignalRepo(database.client, SUPABASE_SCHEMA)
     track_repo = SignalTrackRepo(database.client, SUPABASE_SCHEMA)
     prediction_repo = PredictionRepo(database.client, SUPABASE_SCHEMA)
+    alert_repo = AlertRepo(database.client, SUPABASE_SCHEMA)
     learning_engine = SelfLearningEngine(database.client, SUPABASE_SCHEMA)
     logger.info("Supabase 데이터베이스 연결 완료")
 
-    # DB 연동 스캐너 생성 (트래커 포함)
+    # 스캐너 생성
     scanner = MarketScanner(async_client, candle_repo, signal_repo, track_repo)
 
-    # 시작 시 저장된 학습 가중치 로드
+    # 학습 가중치 로드
     try:
         saved_weights = await learning_engine.get_adaptive_weights()
         engine.set_adaptive_weights(saved_weights)
@@ -637,8 +690,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("적응형 가중치 로드 실패 (기본값 사용): %s", e)
 
-    # 주기적 작업 시작
-    scheduler.add_job(scheduled_scan, "interval", seconds=SCAN_INTERVAL_SECONDS)
+    # 멀티 타임프레임 스케줄링
+    # 15m: 30초마다, 1h: 60초마다, 4h: 5분마다
+    tf_intervals = {"15m": 30, "1h": 60, "4h": 300}
+    for tf in SCAN_TIMEFRAMES:
+        interval = tf_intervals.get(tf, SCAN_INTERVAL_SECONDS)
+        scheduler.add_job(
+            scheduled_scan_tf, "interval", seconds=interval,
+            args=[tf], id=f"scan_{tf}", max_instances=1,
+        )
+        logger.info("스캔 스케줄 등록: %s (주기: %d초)", tf, interval)
+
     scheduler.add_job(push_subscription_updates, "interval", seconds=15)
     scheduler.add_job(cleanup_expired_tracks, "interval", hours=6)
     scheduler.add_job(verify_predictions, "interval", minutes=5)
@@ -646,14 +708,13 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_self_learning, "interval", hours=6)
     scheduler.add_job(run_backfill, "interval", hours=24)
     scheduler.start()
-    logger.info("스캐너 시작 (주기: %d초), 자기학습 활성화", SCAN_INTERVAL_SECONDS)
+    logger.info("멀티TF 스캐너 시작: %s, 자기학습 활성화", SCAN_TIMEFRAMES)
 
-    # 백필: 백그라운드로 즉시 시작 (서버 응답 차단 안 함)
+    # 백필: 백그라운드로 즉시 시작
     asyncio.create_task(run_backfill())
 
     yield
 
-    # 종료
     scheduler.shutdown()
     await async_client.close()
     await database.close()
@@ -662,8 +723,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Crypto Signal System",
-    description="암호화폐 롱/숏 시그널 분석 시스템",
-    version="3.0.0",
+    description="암호화폐 롱/숏 시그널 분석 시스템 v2",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -680,7 +741,6 @@ app.add_middleware(
 
 @app.get("/api/health")
 async def health_check():
-    """시스템 상태 확인"""
     checks = {
         "database": False,
         "exchange": False,
@@ -688,7 +748,8 @@ async def health_check():
         "last_scan": scanner.last_scan_time if scanner else None,
         "connected_clients": len(connected_clients),
         "active_subscriptions": sum(1 for v in client_subscriptions.values() if v),
-        "pending_alerts": sum(1 for a in alerts_store if not a.get("read")),
+        "scan_timeframes": SCAN_TIMEFRAMES,
+        "market_context": bool(_market_context),
     }
     try:
         await database.client.schema(SUPABASE_SCHEMA).table("ohlcv").select("symbol").limit(1).execute()
@@ -701,13 +762,16 @@ async def health_check():
     except Exception:
         pass
 
+    # 읽지 않은 알림 수 (DB)
+    if alert_repo:
+        checks["pending_alerts"] = await alert_repo.get_unread_count()
+
     status = "healthy" if checks["database"] and checks["exchange"] else "degraded"
     return {"status": status, "checks": checks}
 
 
 @app.get("/api/markets")
 async def get_markets():
-    """USDT 마켓 목록 조회"""
     try:
         markets = await async_client.get_usdt_markets()
         return {"markets": markets, "total": len(markets)}
@@ -721,7 +785,6 @@ async def analyze_symbol(
     symbol: str,
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
 ):
-    """개별 코인 분석"""
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
@@ -731,7 +794,6 @@ async def analyze_symbol(
         if len(df) < 20:
             raise HTTPException(status_code=400, detail=f"데이터 부족: {len(df)}개 캔들 (최소 20개 필요)")
 
-        # 상위 TF 데이터 (DB에서 직접 읽기)
         higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
         higher_tf_df = None
         if higher_tf != timeframe:
@@ -740,10 +802,12 @@ async def analyze_symbol(
             except Exception as e:
                 logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
-        signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
+        # 선물 데이터 수집
+        futures_data = await get_futures_signals(async_client, symbol)
+
+        signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
         result = signal.to_dict()
 
-        # 트랙 데이터 병합
         if track_repo:
             try:
                 active_track = await track_repo.get_active_track(symbol, timeframe)
@@ -772,13 +836,11 @@ async def get_ohlcv(
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
     limit: int = Query(default=500, le=5000),
 ):
-    """캔들 데이터 조회 (차트용) - DB에서 직접 읽기 (백필 데이터 활용)"""
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
     try:
         df = await candle_repo.get_candles(symbol, timeframe, limit=limit)
-
         candles = []
         for ts, row in df.iterrows():
             candles.append({
@@ -797,9 +859,7 @@ async def get_ohlcv(
 
 @app.get("/api/ticker/{symbol}")
 async def get_ticker(symbol: str):
-    """개별 코인 실시간 가격 조회"""
     symbol = _normalize_symbol(symbol)
-
     try:
         await async_client.ensure_markets()
         ticker = await async_client.exchange.fetch_ticker(symbol)
@@ -819,19 +879,21 @@ async def get_ticker(symbol: str):
 
 
 @app.get("/api/scan")
-async def scan_market(
-    timeframe: str = Query(default=DEFAULT_TIMEFRAME),
-):
-    """마켓 스캔 실행"""
+async def scan_market(timeframe: str = Query(default=DEFAULT_TIMEFRAME)):
     timeframe = _validate_timeframe(timeframe)
     await scanner.scan_market(timeframe=timeframe)
-    return scanner.get_latest_signals()
+    return scanner.get_latest_signals(timeframe)
 
 
 @app.get("/api/signals")
-async def get_latest_signals():
-    """최근 스캔 결과 조회"""
-    return scanner.get_latest_signals()
+async def get_latest_signals(timeframe: str = Query(default=DEFAULT_TIMEFRAME)):
+    return scanner.get_latest_signals(timeframe)
+
+
+@app.get("/api/signals/all-timeframes")
+async def get_all_tf_signals():
+    """모든 타임프레임의 최근 시그널"""
+    return scanner.get_all_timeframe_signals()
 
 
 @app.get("/api/signals/history")
@@ -841,7 +903,6 @@ async def get_signal_history(
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0),
 ):
-    """시그널 히스토리 조회"""
     signals = await signal_repo.get_signal_history(
         symbol=symbol, timeframe=timeframe, limit=limit, offset=offset
     )
@@ -853,10 +914,7 @@ async def get_signal_tracks(
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
     state: str = Query(default=None),
 ):
-    """활성 시그널 트랙 목록"""
-    tracks = await track_repo.get_active_tracks(
-        timeframe=timeframe, state_filter=state
-    )
+    tracks = await track_repo.get_active_tracks(timeframe=timeframe, state_filter=state)
     return {"tracks": tracks, "total": len(tracks)}
 
 
@@ -865,24 +923,25 @@ async def get_signal_transitions(
     limit: int = Query(default=50, le=200),
     symbol: str = Query(default=None),
 ):
-    """최근 상태 전환 로그"""
-    transitions = await track_repo.get_recent_transitions(
-        limit=limit, symbol=symbol
-    )
+    transitions = await track_repo.get_recent_transitions(limit=limit, symbol=symbol)
     return {"transitions": transitions, "total": len(transitions)}
 
 
 @app.get("/api/timeframes")
 async def get_timeframes():
-    """지원 타임프레임 목록"""
-    return {"timeframes": TIMEFRAMES, "default": DEFAULT_TIMEFRAME}
+    return {"timeframes": TIMEFRAMES, "default": DEFAULT_TIMEFRAME, "scan_timeframes": SCAN_TIMEFRAMES}
+
+
+@app.get("/api/market-context")
+async def get_market_context():
+    """현재 시장 맥락 데이터 조회"""
+    return _market_context
 
 
 # ─── 자기학습 API ─────────────────────────────────────────
 
 @app.get("/api/learning/weights")
 async def get_learning_weights():
-    """현재 적응형 가중치 조회"""
     weights = await learning_engine.get_adaptive_weights() if learning_engine else {}
     return {
         "weights": weights,
@@ -893,14 +952,12 @@ async def get_learning_weights():
 
 @app.get("/api/learning/accuracy")
 async def get_indicator_accuracy():
-    """지표별 정확도 통계 조회"""
     stats = await learning_engine.get_indicator_stats() if learning_engine else []
     return {"indicators": stats, "total": len(stats)}
 
 
 @app.get("/api/backfill/status")
 async def get_backfill_status():
-    """백필 상태 조회 - 심볼별/타임프레임별 저장된 캔들 수"""
     status = {}
     for sym in SCAN_SYMBOLS:
         status[sym] = {}
@@ -912,14 +969,12 @@ async def get_backfill_status():
 
 @app.post("/api/backfill/run")
 async def trigger_backfill():
-    """수동 백필 트리거 (백그라운드 실행)"""
     asyncio.create_task(run_backfill())
     return {"message": "백필 시작됨 (백그라운드)"}
 
 
 @app.post("/api/learning/run")
 async def trigger_learning():
-    """수동 학습 트리거"""
     if not learning_engine:
         raise HTTPException(status_code=500, detail="학습 엔진 미초기화")
     await run_self_learning()
@@ -935,7 +990,6 @@ async def create_prediction(
     request: Request,
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
 ):
-    """예측 생성 - 현재 분석 기반으로 미래 가격 경로 예측"""
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
@@ -965,10 +1019,8 @@ async def create_prediction(
             pass
         horizon = body.get("horizon_candles", 24)
 
-        # 레짐 감지
         regime_result = detect_regime(df)
 
-        # S/R 레벨 추출
         sr_levels = []
         if signal.price_levels:
             for key in ("support_1", "support_2", "resistance_1", "resistance_2"):
@@ -976,7 +1028,6 @@ async def create_prediction(
                 if val:
                     sr_levels.append(val)
 
-        # 캘리브레이션
         cal = None
         stats = await prediction_repo.get_accuracy_stats(symbol=symbol)
         if stats["total_predictions"] >= 5:
@@ -984,6 +1035,9 @@ async def create_prediction(
                 "avg_accuracy": stats["avg_accuracy_score"],
                 "count": stats["total_predictions"],
             }
+
+        btc_signal = _market_context.get("btc_signal")
+        is_alt = symbol != "BTC/USDT"
 
         prediction_data = generate_prediction(
             signal_direction=signal.signal,
@@ -997,6 +1051,8 @@ async def create_prediction(
             regime=regime_result.regime,
             calibration=cal,
             sr_levels=sr_levels,
+            btc_signal_direction=btc_signal,
+            is_altcoin=is_alt,
         )
 
         tp = signal.trade_params or {}
@@ -1032,7 +1088,6 @@ async def create_prediction(
 
 @app.get("/api/predictions/stats")
 async def get_prediction_stats(symbol: str = Query(default=None)):
-    """예측 정확도 통계"""
     sym = _normalize_symbol(symbol) if symbol else None
     stats = await prediction_repo.get_accuracy_stats(symbol=sym)
     return stats
@@ -1040,14 +1095,12 @@ async def get_prediction_stats(symbol: str = Query(default=None)):
 
 @app.get("/api/predictions/dashboard")
 async def get_prediction_dashboard():
-    """전체 예측 통계 (승률, 리더보드, 최근 결과)"""
     stats = await prediction_repo.get_global_prediction_stats()
     return stats
 
 
 @app.get("/api/predictions/active")
 async def get_all_active_predictions():
-    """모든 심볼의 활성 예측 목록"""
     predictions = await prediction_repo.get_all_active_predictions()
     return {"predictions": predictions, "total": len(predictions)}
 
@@ -1057,7 +1110,6 @@ async def get_active_prediction(
     symbol: str,
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
 ):
-    """현재 활성 예측 조회"""
     symbol = _normalize_symbol(symbol)
     prediction = await prediction_repo.get_active_prediction(symbol, timeframe)
     return {"prediction": prediction}
@@ -1070,7 +1122,6 @@ async def get_predictions(
     status: str = Query(default=None),
     limit: int = Query(default=20, le=100),
 ):
-    """예측 히스토리 조회"""
     symbol = _normalize_symbol(symbol)
     predictions = await prediction_repo.get_predictions_history(
         symbol=symbol, status=status, limit=limit
@@ -1080,54 +1131,39 @@ async def get_predictions(
 
 @app.post("/api/predictions/{prediction_id}/verify")
 async def verify_prediction_manual(prediction_id: int):
-    """수동 검증 트리거"""
     prediction = await prediction_repo.get_prediction_by_id(prediction_id)
     if not prediction:
         raise HTTPException(status_code=404, detail="예측을 찾을 수 없습니다")
     if prediction["status"] != "ACTIVE":
         raise HTTPException(status_code=400, detail="이미 검증된 예측입니다")
-
     result = await _verify_single_prediction(prediction)
     return result
 
 
-# ─── 알림 API ──────────────────────────────────────────
+# ─── 알림 API (DB 기반) ──────────────────────────────────
 
 @app.get("/api/alerts")
 async def get_alerts(
     limit: int = Query(default=50, le=200),
     unread_only: bool = Query(default=False),
 ):
-    """알림 목록 조회"""
-    result = alerts_store
-    if unread_only:
-        result = [a for a in result if not a.get("read")]
-    return {
-        "alerts": result[:limit],
-        "total": len(result),
-        "unread": sum(1 for a in alerts_store if not a.get("read")),
-    }
+    if alert_repo:
+        return await alert_repo.get_alerts(limit=limit, unread_only=unread_only)
+    return {"alerts": [], "total": 0, "unread": 0}
 
 
 @app.post("/api/alerts/read")
 async def mark_alerts_read(request: Request):
-    """알림 읽음 처리"""
     body = await request.json()
     alert_ids = body.get("alert_ids", [])
-
-    if not alert_ids:
-        for a in alerts_store:
-            a["read"] = True
-    else:
-        for a in alerts_store:
-            if a["id"] in alert_ids:
-                a["read"] = True
-    return {"success": True}
+    if alert_repo:
+        success = await alert_repo.mark_read(alert_ids if alert_ids else None)
+        return {"success": success}
+    return {"success": False}
 
 
 @app.get("/api/alerts/config")
 async def get_alert_config():
-    """현재 알림 설정 조회"""
     return {
         "enabled": _alert_enabled,
         "min_confidence": _alert_min_confidence,
@@ -1138,7 +1174,6 @@ async def get_alert_config():
 
 @app.post("/api/alerts/config")
 async def update_alert_config(request: Request):
-    """알림 설정 업데이트 (런타임)"""
     global _alert_enabled, _alert_min_confidence, _alert_signal_types, _alert_cooldown_minutes
     body = await request.json()
 
@@ -1159,15 +1194,13 @@ async def update_alert_config(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """실시간 시그널 WebSocket"""
     await websocket.accept()
     connected_clients.append(websocket)
     logger.info("WebSocket 연결 (%d명 접속 중)", len(connected_clients))
 
     try:
-        # 연결 시 최근 스캔 결과 + 미읽은 알림 수 전송
         latest = scanner.get_latest_signals()
-        unread_count = sum(1 for a in alerts_store if not a.get("read"))
+        unread_count = await alert_repo.get_unread_count() if alert_repo else 0
         await websocket.send_text(json.dumps({
             "type": "initial",
             "data": {**latest, "unread_alerts": unread_count}
@@ -1197,10 +1230,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         except Exception:
                             pass
 
-                    signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
+                    futures_data = await get_futures_signals(async_client, symbol)
+                    signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
                     signal_data = signal.to_dict()
 
-                    # 트랙 데이터 병합
                     if track_repo:
                         try:
                             active_track = await track_repo.get_active_track(symbol, timeframe)
