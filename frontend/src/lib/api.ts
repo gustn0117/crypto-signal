@@ -229,11 +229,21 @@ export async function analyzeSymbol(
   );
 }
 
+// 타임프레임별 기본 캔들 수 (2년치 기준)
+const TF_DEFAULT_LIMIT: Record<string, number> = {
+  "15m": 2000,  // ~20일
+  "30m": 2000,  // ~41일
+  "1h": 2000,   // ~83일
+  "4h": 4380,   // ~2년
+  "1d": 730,    // ~2년
+};
+
 export async function fetchOHLCV(
   symbol: string,
   timeframe: string = "1h",
-  limit: number = 200
+  limit?: number
 ): Promise<Candle[]> {
+  if (!limit) limit = TF_DEFAULT_LIMIT[timeframe] || 500;
   const encoded = encodeURIComponent(symbol.replace("/", ""));
   const data = await fetchWithError<{ candles: Candle[] }>(
     `${API_BASE}/api/ohlcv/${encoded}?timeframe=${timeframe}&limit=${limit}`

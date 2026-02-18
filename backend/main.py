@@ -770,7 +770,7 @@ async def analyze_symbol(
 async def get_ohlcv(
     symbol: str,
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
-    limit: int = Query(default=200, le=1000),
+    limit: int = Query(default=500, le=5000),
 ):
     """캔들 데이터 조회 (차트용) - DB에서 직접 읽기 (백필 데이터 활용)"""
     timeframe = _validate_timeframe(timeframe)
