@@ -82,3 +82,29 @@ class CandleRepo:
         if resp.data:
             return resp.data[0]["timestamp_ms"]
         return None
+
+    async def get_oldest_timestamp(self, symbol: str, timeframe: str) -> Optional[int]:
+        """백필용: 가장 오래된 캔들의 timestamp_ms 반환."""
+        resp = await (
+            self._table()
+            .select("timestamp_ms")
+            .eq("symbol", symbol)
+            .eq("timeframe", timeframe)
+            .order("timestamp_ms", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0]["timestamp_ms"]
+        return None
+
+    async def get_candle_count(self, symbol: str, timeframe: str) -> int:
+        """저장된 캔들 수 조회."""
+        resp = await (
+            self._table()
+            .select("timestamp_ms", count="exact")
+            .eq("symbol", symbol)
+            .eq("timeframe", timeframe)
+            .execute()
+        )
+        return resp.count or 0

@@ -2,6 +2,7 @@
 FastAPI 메인 서버
 REST API + WebSocket 엔드포인트
 """
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -17,7 +18,8 @@ from config import (
     HOST, PORT, SCAN_INTERVAL_SECONDS, TIMEFRAMES, DEFAULT_TIMEFRAME,
     ALLOWED_ORIGINS, LOG_LEVEL, LOG_DIR, HIGHER_TF_MAP,
     ALERT_ENABLED, ALERT_MIN_CONFIDENCE, ALERT_SIGNAL_TYPES, ALERT_COOLDOWN_MINUTES,
-    ANALYSIS_CANDLE_LIMIT, SUPABASE_SCHEMA,
+    ANALYSIS_CANDLE_LIMIT, SUPABASE_SCHEMA, SCAN_SYMBOLS,
+    BACKFILL_DAYS, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
 )
 from exchange import AsyncBinanceClient
 from scanner import MarketScanner
@@ -597,6 +599,26 @@ async def run_self_learning():
         logger.error("자기학습 실패: %s", e)
 
 
+async def run_backfill():
+    """히스토리 백필 (서버 시작 시 1회 + 이후 24시간마다 증분)"""
+    try:
+        collector = DataCollector(async_client, candle_repo)
+        results = await collector.backfill_all(
+            symbols=SCAN_SYMBOLS,
+            timeframes=BACKFILL_TIMEFRAMES,
+            days=BACKFILL_DAYS,
+            batch_size=BACKFILL_BATCH_SIZE,
+            concurrency=BACKFILL_CONCURRENCY,
+        )
+        total = sum(c for sym in results.values() for c in sym.values())
+        if total > 0:
+            logger.info("백필 완료: 총 %d개 캔들 저장", total)
+        else:
+            logger.info("백필: 새로 저장할 데이터 없음 (이미 최신)")
+    except Exception as e:
+        logger.error("백필 실패: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global scanner, candle_repo, signal_repo, track_repo, prediction_repo, learning_engine
@@ -628,8 +650,12 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(verify_predictions, "interval", minutes=5)
     scheduler.add_job(update_prediction_progress, "interval", seconds=60)
     scheduler.add_job(run_self_learning, "interval", hours=6)
+    scheduler.add_job(run_backfill, "interval", hours=24)
     scheduler.start()
     logger.info("스캐너 시작 (주기: %d초), 자기학습 활성화", SCAN_INTERVAL_SECONDS)
+
+    # 백필: 백그라운드로 즉시 시작 (서버 응답 차단 안 함)
+    asyncio.create_task(run_backfill())
 
     yield
 
@@ -881,6 +907,25 @@ async def get_indicator_accuracy():
     """지표별 정확도 통계 조회"""
     stats = await learning_engine.get_indicator_stats() if learning_engine else []
     return {"indicators": stats, "total": len(stats)}
+
+
+@app.get("/api/backfill/status")
+async def get_backfill_status():
+    """백필 상태 조회 - 심볼별/타임프레임별 저장된 캔들 수"""
+    status = {}
+    for sym in SCAN_SYMBOLS:
+        status[sym] = {}
+        for tf in BACKFILL_TIMEFRAMES:
+            count = await candle_repo.get_candle_count(sym, tf)
+            status[sym][tf] = count
+    return {"backfill": status}
+
+
+@app.post("/api/backfill/run")
+async def trigger_backfill():
+    """수동 백필 트리거 (백그라운드 실행)"""
+    asyncio.create_task(run_backfill())
+    return {"message": "백필 시작됨 (백그라운드)"}
 
 
 @app.post("/api/learning/run")

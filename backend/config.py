@@ -69,6 +69,12 @@ HIGHER_TF_MAP = {
 # 분석 캔들 수 (깊은 분석용)
 ANALYSIS_CANDLE_LIMIT = int(os.getenv("ANALYSIS_CANDLE_LIMIT", "500"))
 
+# 히스토리 백필 설정
+BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "730"))  # 2년치
+BACKFILL_TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d"]  # 백필 대상 타임프레임
+BACKFILL_BATCH_SIZE = 1000  # 바이낸스 API 1회 최대 캔들 수
+BACKFILL_CONCURRENCY = 3  # 동시 심볼 수 (API 레이트 리밋 고려)
+
 # 알림 설정
 ALERT_ENABLED = os.getenv("ALERT_ENABLED", "true").lower() == "true"
 ALERT_MIN_CONFIDENCE = float(os.getenv("ALERT_MIN_CONFIDENCE", "0.5"))
