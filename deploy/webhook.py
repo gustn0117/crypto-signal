@@ -39,7 +39,7 @@ class DeployHandler(http.server.BaseHTTPRequestHandler):
 
         # 배포 실행 (비동기)
         subprocess.Popen(
-            ["sh", "-c", "cd /repo/backend && git pull && docker compose up -d --build"],
+            ["sh", "-c", "cd /repo && git pull && docker compose up -d --build"],
         )
 
         self.send_response(200)

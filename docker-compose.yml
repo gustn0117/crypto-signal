@@ -1,27 +1,32 @@
 services:
   backend:
     build: ./backend
+    container_name: coin-backend
     ports:
-      - "8000:8000"
-    volumes:
-      - ./backend/data:/app/data
-      - ./backend/logs:/app/logs
+      - "8001:8000"
     environment:
-      - LOG_LEVEL=INFO
-      - ALLOWED_ORIGINS=http://localhost:3000
-      - ALERT_ENABLED=true
-      - ALERT_MIN_CONFIDENCE=0.5
-      - ALERT_COOLDOWN_MINUTES=30
+      - SUPABASE_URL=https://api.hsweb.pics
+      - SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE2NDE3NjkyMDAsImV4cCI6MTc5OTUzNTYwMH0.xTNteRFphY3F9W2PPWOwCQ9PDXD05ySRqkJu5d4Cej0
+      - PG_META_URL=https://api.hsweb.pics/pg/query
+      - ALLOWED_ORIGINS=*
+    volumes:
+      - coin-logs:/app/logs
+      - coin-data:/app/data
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
-        NEXT_PUBLIC_WS_URL: ws://localhost:8000
+        NEXT_PUBLIC_API_URL: https://coin.hsweb.pics
+        NEXT_PUBLIC_WS_URL: wss://coin.hsweb.pics
+    container_name: coin-frontend
     ports:
-      - "3000:3000"
+      - "3001:3000"
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  coin-logs:
+  coin-data:
