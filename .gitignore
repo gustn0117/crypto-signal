@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Node
+node_modules/
+.next/
+
+# Logs & Data
+logs/
+data/
+*.log
+
+# OS
+.DS_Store
+
+# Archives
+*.tar.gz
+
+# Template
+Cryptocurrency Dashboard Admin Template*/

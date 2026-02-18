@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+ccxt
+pandas
+pandas-ta
+numpy
+websockets
+python-dotenv
+apscheduler
+supabase
+httpx

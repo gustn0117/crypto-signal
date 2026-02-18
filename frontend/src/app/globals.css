@@ -1,0 +1,123 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-body: #070713;
+  --bg-card: #0b0c21;
+  --bg-active: #10112d;
+  --bg-hover: #000613;
+  --border: rgba(120, 130, 140, 0.13);
+  --text-heading: #ffffff;
+  --text-body: #abafb3;
+  --text-secondary: #dddddd;
+  --text-muted: #99abb4;
+  --primary: #4680ff;
+  --success: #26dad2;
+  --success-text: #4caf50;
+  --danger: #ef5350;
+  --danger-text: #ff5722;
+  --warning: #ffb22b;
+  --info: #1976d2;
+  --sidebar-width: 240px;
+  --header-height: 60px;
+}
+
+* {
+  box-sizing: border-box;
+  outline: none;
+}
+
+html {
+  min-height: 100%;
+  background: var(--bg-body);
+}
+
+body {
+  background: var(--bg-body);
+  color: var(--text-body);
+  font-family: 'Roboto', sans-serif;
+  font-size: 0.9rem;
+  margin: 0;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-heading);
+  font-weight: 500;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-card);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 130, 140, 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 130, 140, 0.5);
+}
+
+/* Reusable component classes */
+@layer components {
+  .cd-card {
+    @apply bg-card rounded-card shadow-card p-3;
+    border: 1px solid var(--border);
+  }
+
+  .cd-card-header {
+    @apply px-4 py-3 font-medium text-heading text-sm;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cd-badge {
+    @apply inline-flex items-center gap-1 rounded-full text-xs font-medium px-2.5 py-0.5;
+  }
+
+  .cd-table th {
+    @apply px-3 py-2.5 text-muted text-xs font-semibold uppercase tracking-wider text-left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cd-table td {
+    @apply px-3 py-2.5 text-sm;
+    border-top: 1px solid var(--border);
+    color: var(--text-body);
+  }
+
+  .cd-table tbody tr:hover {
+    background-color: var(--bg-hover);
+  }
+
+  .cd-input {
+    @apply px-3 py-2 text-sm bg-body rounded-card text-heading placeholder-muted;
+    border: 1px solid var(--border);
+  }
+
+  .cd-input:focus {
+    border-color: var(--primary);
+  }
+}
+
+/* Toast animation */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
