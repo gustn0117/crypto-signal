@@ -781,13 +781,11 @@ async def get_ohlcv(
     timeframe: str = Query(default=DEFAULT_TIMEFRAME),
     limit: int = Query(default=200, le=1000),
 ):
-    """캔들 데이터 조회 (차트용)"""
+    """캔들 데이터 조회 (차트용) - DB에서 직접 읽기 (백필 데이터 활용)"""
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
     try:
-        collector = DataCollector(async_client, candle_repo)
-        await collector.collect(symbol, timeframe)
         df = await candle_repo.get_candles(symbol, timeframe, limit=limit)
 
         candles = []
