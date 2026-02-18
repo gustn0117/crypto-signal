@@ -118,11 +118,8 @@ class MarketScanner:
                 except Exception as e:
                     logger.warning(f"{symbol} 트래커 처리 실패: {e}")
 
-        # 5) 비NEUTRAL 시그널만 필터 + 트랙 데이터 병합
-        signals = [
-            sig for sig in all_results.values()
-            if sig["signal"] != "NEUTRAL"
-        ]
+        # 5) 전체 코인 결과 + 트랙 데이터 병합 (NEUTRAL 포함)
+        signals = list(all_results.values())
 
         if self.track_repo:
             try:

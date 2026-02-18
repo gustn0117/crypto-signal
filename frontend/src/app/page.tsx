@@ -119,8 +119,9 @@ export default function Dashboard() {
             color="#4680ff"
           />
           <SummaryCard
-            label="전체 시그널"
-            count={signals.length}
+            label="활성 / 관망"
+            count={signals.filter((s) => s.signal !== "NEUTRAL").length}
+            suffix={` / ${signals.filter((s) => s.signal === "NEUTRAL").length}`}
             color="#abafb3"
           />
         </div>
@@ -132,7 +133,9 @@ export default function Dashboard() {
         <div className="lg:col-span-4 cd-card p-0 overflow-hidden">
           <div className="cd-card-header flex items-center justify-between">
             <span className="font-semibold text-heading">시그널 목록</span>
-            <span className="text-xs text-muted">{signals.length}개 감지</span>
+            <span className="text-xs text-muted">
+              {signals.filter((s) => s.signal !== "NEUTRAL").length}개 활성 / {signals.length}개 코인
+            </span>
           </div>
           <SignalTable
             signals={signals}

@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS coin.signals (
     current_price   DOUBLE PRECISION NOT NULL,
     indicators      JSONB NOT NULL,
     candle_patterns JSONB NOT NULL,
+    chart_patterns  JSONB DEFAULT '[]'::jsonb,
     volume_signals  JSONB NOT NULL,
     summary         TEXT NOT NULL,
     created_at      TEXT NOT NULL,
@@ -119,6 +120,24 @@ CREATE TABLE IF NOT EXISTS coin.predictions (
     progress_time_pct      DOUBLE PRECISION DEFAULT NULL,
     progress_path_accuracy DOUBLE PRECISION DEFAULT NULL,
     progress_updated_at    TEXT DEFAULT NULL
+);
+-- indicator_accuracy (자기학습)
+CREATE TABLE IF NOT EXISTS coin.indicator_accuracy (
+    id              BIGSERIAL PRIMARY KEY,
+    indicator_name  TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    total_count     INTEGER NOT NULL DEFAULT 0,
+    correct_count   INTEGER NOT NULL DEFAULT 0,
+    accuracy        DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+    last_updated    TEXT NOT NULL
+);
+
+-- adaptive_weights (자기학습)
+CREATE TABLE IF NOT EXISTS coin.adaptive_weights (
+    id              BIGSERIAL PRIMARY KEY,
+    weights         JSONB NOT NULL,
+    sample_count    INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL
 );
 """
 
@@ -254,6 +273,20 @@ ALTER ROLE authenticator SET pgrst.db_schemas = 'haram, coinhost, maeum, soul, p
 NOTIFY pgrst, 'reload config';
 """
 
+# ── 마이그레이션 SQL (기존 테이블 업데이트) ──────────────
+
+MIGRATION_SQL = """
+-- signals 테이블에 chart_patterns 컬럼 추가 (없으면)
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'coin' AND table_name = 'signals' AND column_name = 'chart_patterns'
+    ) THEN
+        ALTER TABLE coin.signals ADD COLUMN chart_patterns JSONB DEFAULT '[]'::jsonb;
+    END IF;
+END $$;
+"""
+
 
 def run_sql(client: httpx.Client, sql: str, label: str):
     """pg-meta API로 SQL 실행"""
@@ -279,7 +312,11 @@ def main():
 
         # 1. 테이블 생성
         print("\n[Phase 1] 테이블 생성")
-        run_sql(client, TABLES_SQL, "5개 테이블")
+        run_sql(client, TABLES_SQL, "7개 테이블")
+
+        # 1-b. 마이그레이션 (기존 테이블 컬럼 추가)
+        print("\n[Phase 1-b] 마이그레이션")
+        run_sql(client, MIGRATION_SQL, "signals.chart_patterns 컬럼 추가")
 
         # 2. 인덱스 생성
         print("\n[Phase 2] 인덱스 생성")

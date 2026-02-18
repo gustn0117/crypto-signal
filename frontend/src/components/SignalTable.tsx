@@ -16,7 +16,7 @@ interface SignalTableProps {
 
 type SortKey = "symbol" | "confidence" | "signal" | "state";
 type SortDir = "asc" | "desc";
-type FilterType = "all" | "long" | "short" | "confirmed";
+type FilterType = "all" | "active" | "long" | "short" | "confirmed";
 
 function formatPrice(price: number): string {
   if (price >= 1000) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -53,6 +53,11 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
     }
   };
 
+  const activeCount = useMemo(
+    () => signals.filter((s) => s.signal !== "NEUTRAL").length,
+    [signals]
+  );
+
   const confirmedCount = useMemo(
     () => signals.filter((s) => s.track?.state === "CONFIRMED").length,
     [signals]
@@ -60,11 +65,17 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
 
   const filtered = useMemo(() => {
     let result = [...signals];
+    if (filter === "active") result = result.filter((s) => s.signal !== "NEUTRAL");
     if (filter === "long") result = result.filter((s) => s.signal.includes("LONG"));
     if (filter === "short") result = result.filter((s) => s.signal.includes("SHORT"));
     if (filter === "confirmed") result = result.filter((s) => s.track?.state === "CONFIRMED");
 
+    // NEUTRAL을 항상 아래로 정렬 (신뢰도 기준일 때)
     result.sort((a, b) => {
+      // NEUTRAL은 항상 뒤로
+      if (a.signal === "NEUTRAL" && b.signal !== "NEUTRAL") return 1;
+      if (a.signal !== "NEUTRAL" && b.signal === "NEUTRAL") return -1;
+
       let cmp = 0;
       if (sortKey === "symbol") cmp = a.symbol.localeCompare(b.symbol);
       else if (sortKey === "confidence") cmp = a.confidence - b.confidence;
@@ -96,7 +107,7 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
     <div>
       {/* 필터 버튼 */}
       <div className="flex items-center gap-1 px-3 py-2 border-b border-card-active flex-wrap">
-        {(["all", "long", "short", "confirmed"] as FilterType[]).map((f) => (
+        {(["all", "active", "long", "short", "confirmed"] as FilterType[]).map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -114,11 +125,13 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
           >
             {f === "all"
               ? `전체 (${signals.length})`
-              : f === "long"
-                ? `롱 (${signals.filter((s) => s.signal.includes("LONG")).length})`
-                : f === "short"
-                  ? `숏 (${signals.filter((s) => s.signal.includes("SHORT")).length})`
-                  : `확정 (${confirmedCount})`}
+              : f === "active"
+                ? `활성 (${activeCount})`
+                : f === "long"
+                  ? `롱 (${signals.filter((s) => s.signal.includes("LONG")).length})`
+                  : f === "short"
+                    ? `숏 (${signals.filter((s) => s.signal.includes("SHORT")).length})`
+                    : `확정 (${confirmedCount})`}
           </button>
         ))}
       </div>
@@ -158,6 +171,7 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
           <tbody>
             {filtered.map((sig) => {
               const isConfirmed = sig.track?.state === "CONFIRMED";
+              const isNeutral = sig.signal === "NEUTRAL";
               return (
                 <tr
                   key={sig.symbol}
@@ -165,7 +179,9 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
                   className={`border-t border-card-active cursor-pointer transition-colors ${
                     selectedSymbol === sig.symbol
                       ? "bg-[#4680ff22]"
-                      : "hover:bg-card"
+                      : isNeutral
+                        ? "hover:bg-card opacity-60"
+                        : "hover:bg-card"
                   }`}
                   style={isConfirmed ? { borderLeft: "3px solid #26dad2" } : undefined}
                 >
@@ -180,28 +196,36 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
                     <SignalBadge signal={sig.signal} size="sm" />
                   </td>
                   <td className="px-4 py-3">
-                    <SignalStateBadge track={sig.track} size="sm" />
+                    {isNeutral ? (
+                      <span className="text-xs text-muted">-</span>
+                    ) : (
+                      <SignalStateBadge track={sig.track} size="sm" />
+                    )}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-1.5 bg-card-active rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all"
-                          style={{
-                            width: `${sig.confidence * 100}%`,
-                            backgroundColor:
-                              sig.confidence >= 0.7
-                                ? "#4caf50"
-                                : sig.confidence >= 0.4
-                                  ? "#ffb22b"
-                                  : "#abafb3",
-                          }}
-                        />
+                    {isNeutral ? (
+                      <span className="text-xs text-muted">-</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="w-16 h-1.5 bg-card-active rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${sig.confidence * 100}%`,
+                              backgroundColor:
+                                sig.confidence >= 0.7
+                                  ? "#4caf50"
+                                  : sig.confidence >= 0.4
+                                    ? "#ffb22b"
+                                    : "#abafb3",
+                            }}
+                          />
+                        </div>
+                        <span className="text-muted text-xs">
+                          {(sig.confidence * 100).toFixed(0)}%
+                        </span>
                       </div>
-                      <span className="text-muted text-xs">
-                        {(sig.confidence * 100).toFixed(0)}%
-                      </span>
-                    </div>
+                    )}
                   </td>
                   <td className="px-2 py-3">
                     <Link

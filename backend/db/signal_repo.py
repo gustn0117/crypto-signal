@@ -23,6 +23,7 @@ class SignalRepo:
                 "current_price": s["current_price"],
                 "indicators": s["indicators"],
                 "candle_patterns": s["candle_patterns"],
+                "chart_patterns": s.get("chart_patterns", []),
                 "volume_signals": s["volume_signals"],
                 "summary": s["summary"],
                 "created_at": s["timestamp"],
@@ -34,6 +35,17 @@ class SignalRepo:
             return
 
         await self._table().insert(rows).execute()
+
+    async def get_signals_for_learning(self, limit: int = 2000) -> list[dict]:
+        """자기학습용 시그널 조회 (최근 N개, NEUTRAL 포함)."""
+        query = (
+            self._table()
+            .select("symbol,timeframe,signal,confidence,indicators,candle_patterns,chart_patterns,volume_signals,created_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        resp = await query.execute()
+        return resp.data
 
     async def get_signal_history(self, symbol: str = None,
                                   timeframe: str = None,
@@ -62,6 +74,7 @@ class SignalRepo:
             "current_price": row["current_price"],
             "indicators": row["indicators"],
             "candle_patterns": row["candle_patterns"],
+            "chart_patterns": row.get("chart_patterns", []),
             "volume_signals": row["volume_signals"],
             "summary": row["summary"],
             "timestamp": row["created_at"],

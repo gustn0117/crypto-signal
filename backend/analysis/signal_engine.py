@@ -71,12 +71,25 @@ class SignalEngine:
     기술적 지표 + 캔들 패턴 + 거래량 분석을 종합하여 최종 시그널 생성
     """
 
-    WEIGHTS = {
+    DEFAULT_WEIGHTS = {
         "indicators": 0.35,
         "candle_patterns": 0.15,
         "chart_patterns": 0.30,
         "volume": 0.20,
     }
+
+    def __init__(self):
+        self._adaptive_weights: dict | None = None
+
+    def set_adaptive_weights(self, weights: dict | None):
+        """자기학습 엔진에서 계산된 적응형 가중치를 설정."""
+        self._adaptive_weights = weights
+        if weights:
+            logger.info("적응형 가중치 적용: %s", {k: round(v, 3) for k, v in weights.items()})
+
+    @property
+    def weights(self) -> dict:
+        return self._adaptive_weights or self.DEFAULT_WEIGHTS
 
     def analyze(
         self,
@@ -120,12 +133,13 @@ class SignalEngine:
             [(r.signal, r.strength) for r in volume_results]
         ) if volume_results else 0.0
 
-        # 6) 가중 합산
+        # 6) 가중 합산 (적응형 가중치 사용)
+        w = self.weights
         total_score = (
-            indicator_score * self.WEIGHTS["indicators"]
-            + candle_score * self.WEIGHTS["candle_patterns"]
-            + chart_score * self.WEIGHTS["chart_patterns"]
-            + volume_score * self.WEIGHTS["volume"]
+            indicator_score * w["indicators"]
+            + candle_score * w["candle_patterns"]
+            + chart_score * w["chart_patterns"]
+            + volume_score * w["volume"]
         )
 
         # 6) 시그널 결정

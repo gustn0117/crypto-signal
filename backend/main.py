@@ -26,6 +26,7 @@ from analysis.regime import detect_regime
 from db import Database, CandleRepo, SignalRepo, SignalTrackRepo, PredictionRepo
 from data_collector import DataCollector
 from analysis.prediction import generate_prediction
+from analysis.self_learning import SelfLearningEngine
 
 # 로깅 초기화
 setup_logging(log_dir=LOG_DIR, level=LOG_LEVEL)
@@ -41,6 +42,7 @@ candle_repo: CandleRepo | None = None
 signal_repo: SignalRepo | None = None
 track_repo: SignalTrackRepo | None = None
 prediction_repo: PredictionRepo | None = None
+learning_engine: SelfLearningEngine | None = None
 
 # WebSocket 연결 관리
 connected_clients: List[WebSocket] = []
@@ -281,7 +283,7 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
 
 async def scheduled_scan():
     """주기적 마켓 스캔"""
-    signals = await scanner.scan_market(timeframe=DEFAULT_TIMEFRAME)
+    await scanner.scan_market(timeframe=DEFAULT_TIMEFRAME)
 
     # 트랜지션 기반 알림 + 자동 예측 생성
     for tr in (scanner.latest_transitions or []):
@@ -311,8 +313,8 @@ async def scheduled_scan():
                 except Exception:
                     pass
 
-    # 기존 scan_update 브로드캐스트
-    if signals and connected_clients:
+    # scan_update 브로드캐스트 (10개 코인 전체)
+    if connected_clients:
         await _broadcast_ws(json.dumps({
             "type": "scan_update",
             "data": scanner.get_latest_signals()
@@ -582,9 +584,22 @@ async def cleanup_expired_tracks():
             logger.error("트랙 정리 실패: %s", e)
 
 
+async def run_self_learning():
+    """자기학습 실행 (6시간마다) - 지표 정확도 분석 및 가중치 자동 조정"""
+    if not learning_engine:
+        return
+    try:
+        await learning_engine.run_learning_cycle()
+        # 학습 결과를 시그널 엔진에 반영
+        weights = await learning_engine.get_adaptive_weights()
+        engine.set_adaptive_weights(weights)
+    except Exception as e:
+        logger.error("자기학습 실패: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, candle_repo, signal_repo, track_repo, prediction_repo
+    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, learning_engine
 
     # DB 초기화
     await database.connect()
@@ -592,10 +607,19 @@ async def lifespan(app: FastAPI):
     signal_repo = SignalRepo(database.client, SUPABASE_SCHEMA)
     track_repo = SignalTrackRepo(database.client, SUPABASE_SCHEMA)
     prediction_repo = PredictionRepo(database.client, SUPABASE_SCHEMA)
+    learning_engine = SelfLearningEngine(database.client, SUPABASE_SCHEMA)
     logger.info("Supabase 데이터베이스 연결 완료")
 
     # DB 연동 스캐너 생성 (트래커 포함)
     scanner = MarketScanner(async_client, candle_repo, signal_repo, track_repo)
+
+    # 시작 시 저장된 학습 가중치 로드
+    try:
+        saved_weights = await learning_engine.get_adaptive_weights()
+        engine.set_adaptive_weights(saved_weights)
+        logger.info("저장된 적응형 가중치 로드 완료")
+    except Exception as e:
+        logger.warning("적응형 가중치 로드 실패 (기본값 사용): %s", e)
 
     # 주기적 작업 시작
     scheduler.add_job(scheduled_scan, "interval", seconds=SCAN_INTERVAL_SECONDS)
@@ -603,8 +627,9 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(cleanup_expired_tracks, "interval", hours=6)
     scheduler.add_job(verify_predictions, "interval", minutes=5)
     scheduler.add_job(update_prediction_progress, "interval", seconds=60)
+    scheduler.add_job(run_self_learning, "interval", hours=6)
     scheduler.start()
-    logger.info("스캐너 시작 (주기: %d초)", SCAN_INTERVAL_SECONDS)
+    logger.info("스캐너 시작 (주기: %d초), 자기학습 활성화", SCAN_INTERVAL_SECONDS)
 
     yield
 
@@ -836,6 +861,36 @@ async def get_signal_transitions(
 async def get_timeframes():
     """지원 타임프레임 목록"""
     return {"timeframes": TIMEFRAMES, "default": DEFAULT_TIMEFRAME}
+
+
+# ─── 자기학습 API ─────────────────────────────────────────
+
+@app.get("/api/learning/weights")
+async def get_learning_weights():
+    """현재 적응형 가중치 조회"""
+    weights = await learning_engine.get_adaptive_weights() if learning_engine else {}
+    return {
+        "weights": weights,
+        "is_adaptive": learning_engine._cached_weights is not None if learning_engine else False,
+        "default_weights": SignalEngine.DEFAULT_WEIGHTS,
+    }
+
+
+@app.get("/api/learning/accuracy")
+async def get_indicator_accuracy():
+    """지표별 정확도 통계 조회"""
+    stats = await learning_engine.get_indicator_stats() if learning_engine else []
+    return {"indicators": stats, "total": len(stats)}
+
+
+@app.post("/api/learning/run")
+async def trigger_learning():
+    """수동 학습 트리거"""
+    if not learning_engine:
+        raise HTTPException(status_code=500, detail="학습 엔진 미초기화")
+    await run_self_learning()
+    weights = await learning_engine.get_adaptive_weights()
+    return {"message": "학습 완료", "weights": weights}
 
 
 # ─── 예측 API ──────────────────────────────────────────
