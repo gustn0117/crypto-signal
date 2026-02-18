@@ -10,14 +10,15 @@ import {
   updateAlertConfig,
   markAlertsRead,
 } from "@/lib/api";
+import { TableSkeleton } from "@/components/Skeleton";
 import { Bell, Settings, Check } from "lucide-react";
 
 const SIGNAL_OPTIONS = ["STRONG_LONG", "LONG", "SHORT", "STRONG_SHORT"];
 
 function signalColor(signal: string): string {
-  if (signal.includes("LONG")) return "#4caf50";
-  if (signal.includes("SHORT")) return "#ef5350";
-  return "#abafb3";
+  if (signal.includes("LONG")) return "var(--long)";
+  if (signal.includes("SHORT")) return "var(--short)";
+  return "var(--text-muted)";
 }
 
 function timeAgo(timestamp: string): string {
@@ -98,21 +99,21 @@ export default function AlertsPage() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* 탭 */}
-      <div className="flex items-center gap-1" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-1 border-b border-border">
         <button
           onClick={() => setTab("history")}
           className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
             tab === "history"
               ? "border-primary text-heading"
-              : "border-transparent text-body-text hover:text-heading"
+              : "border-transparent text-muted hover:text-heading"
           }`}
         >
           <Bell size={16} />
           알림 내역
           {unread > 0 && (
-            <span className="ml-1 px-1.5 py-0.5 text-xs bg-danger text-white rounded-full">
+            <span className="ml-1 px-1.5 py-0.5 text-xs bg-danger text-white rounded-full font-bold">
               {unread}
             </span>
           )}
@@ -122,7 +123,7 @@ export default function AlertsPage() {
           className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
             tab === "settings"
               ? "border-primary text-heading"
-              : "border-transparent text-body-text hover:text-heading"
+              : "border-transparent text-muted hover:text-heading"
           }`}
         >
           <Settings size={16} />
@@ -131,7 +132,9 @@ export default function AlertsPage() {
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-muted">로딩 중...</div>
+        <div className="cd-card p-0 overflow-hidden">
+          <TableSkeleton rows={6} />
+        </div>
       ) : tab === "history" ? (
         <div>
           <div className="flex items-center justify-between mb-4">
@@ -147,9 +150,11 @@ export default function AlertsPage() {
 
           {alerts.length === 0 ? (
             <div className="text-center py-16 text-muted">
-              <Bell size={48} className="mx-auto mb-4 opacity-50" />
-              <p className="text-lg mb-2 text-heading">알림이 없습니다</p>
-              <p className="text-sm">시그널이 감지되면 여기에 표시됩니다</p>
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-card-active flex items-center justify-center">
+                <Bell size={28} className="text-icon-muted" />
+              </div>
+              <p className="text-base font-medium text-heading mb-1">알림이 없습니다</p>
+              <p className="text-sm text-muted">시그널이 감지되면 여기에 표시됩니다</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -164,7 +169,7 @@ export default function AlertsPage() {
                   }`}
                 >
                   <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
                       {!alert.read && (
                         <span className="w-2.5 h-2.5 rounded-full bg-primary shrink-0" />
                       )}
@@ -173,7 +178,7 @@ export default function AlertsPage() {
                         className="text-xs font-bold px-2 py-0.5 rounded-full"
                         style={{
                           color: signalColor(alert.signal),
-                          backgroundColor: `${signalColor(alert.signal)}20`,
+                          backgroundColor: `color-mix(in srgb, ${signalColor(alert.signal)} 12%, transparent)`,
                         }}
                       >
                         {alert.signal}
@@ -184,7 +189,7 @@ export default function AlertsPage() {
                     </div>
                     <span className="text-xs text-muted">{timeAgo(alert.timestamp)}</span>
                   </div>
-                  <div className="flex items-center gap-4 text-sm text-body-text">
+                  <div className="flex items-center gap-4 text-sm text-body-text flex-wrap">
                     <span>가격: ${alert.current_price.toLocaleString()}</span>
                     {alert.trade_params && (
                       <>
@@ -198,7 +203,7 @@ export default function AlertsPage() {
                     )}
                   </div>
                   {alert.summary && (
-                    <p className="text-sm text-muted mt-2">{alert.summary}</p>
+                    <p className="text-sm text-muted mt-2 leading-relaxed">{alert.summary}</p>
                   )}
                 </Link>
               ))}
@@ -218,7 +223,7 @@ export default function AlertsPage() {
                 <button
                   onClick={() => setConfig({ ...config, enabled: !config.enabled })}
                   className={`w-12 h-6 rounded-full transition-colors relative ${
-                    config.enabled ? "bg-success-text" : "bg-icon-muted"
+                    config.enabled ? "bg-primary" : "bg-icon-muted"
                   }`}
                 >
                   <span
@@ -267,7 +272,7 @@ export default function AlertsPage() {
                           ? "border-current"
                           : "border-border text-muted hover:text-heading"
                       }`}
-                      style={active ? { color, borderColor: color, backgroundColor: `${color}10` } : undefined}
+                      style={active ? { color, borderColor: color, backgroundColor: `color-mix(in srgb, ${color} 8%, transparent)` } : undefined}
                     >
                       {type.replace("_", " ")}
                     </button>
@@ -300,7 +305,7 @@ export default function AlertsPage() {
             <button
               onClick={handleSaveConfig}
               disabled={saving}
-              className="w-full py-3 bg-success-text hover:bg-success-text/80 text-white font-medium rounded-card transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full py-3 bg-primary hover:bg-primary/80 text-white font-medium rounded-card transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {saved ? (
                 <><Check size={16} /> 저장됨</>

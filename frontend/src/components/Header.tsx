@@ -1,7 +1,7 @@
 "use client";
 
 import AlertBell from "./AlertBell";
-import { Wifi, WifiOff } from "lucide-react";
+import { Wifi, WifiOff, Menu } from "lucide-react";
 
 interface HeaderProps {
   connected: boolean;
@@ -9,6 +9,8 @@ interface HeaderProps {
   latestAlert: any;
   onClearLatest: () => void;
   onResetUnread: (count: number) => void;
+  isDesktop: boolean;
+  onMenuClick: () => void;
 }
 
 export default function Header({
@@ -17,28 +19,49 @@ export default function Header({
   latestAlert,
   onClearLatest,
   onResetUnread,
+  isDesktop,
+  onMenuClick,
 }: HeaderProps) {
   return (
     <header
-      className="fixed top-0 right-0 z-30 bg-card flex items-center justify-end px-6"
+      className="fixed top-0 right-0 z-30 flex items-center justify-between px-4 lg:px-6 bg-card/80 backdrop-blur-md"
       style={{
         height: "var(--header-height)",
-        left: "var(--sidebar-width)",
+        left: isDesktop ? "var(--sidebar-width)" : 0,
         borderBottom: "1px solid var(--border)",
       }}
     >
-      <div className="flex items-center gap-5">
-        {/* WebSocket 연결 상태 */}
-        <div className="flex items-center gap-2">
+      {/* 좌측: 햄버거 (모바일) */}
+      <div className="flex items-center gap-3">
+        {!isDesktop && (
+          <button
+            onClick={onMenuClick}
+            className="p-2 -ml-1 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
+          >
+            <Menu size={20} />
+          </button>
+        )}
+      </div>
+
+      {/* 우측: 상태 + 알림 */}
+      <div className="flex items-center gap-3">
+        {/* WebSocket 연결 상태 pill */}
+        <div
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+            connected
+              ? "bg-success/10 text-success border border-success/20"
+              : "bg-danger/10 text-danger border border-danger/20"
+          }`}
+        >
           {connected ? (
             <>
-              <Wifi size={14} className="text-success" />
-              <span className="text-success text-xs font-medium">실시간</span>
+              <Wifi size={12} />
+              <span>Live</span>
             </>
           ) : (
             <>
-              <WifiOff size={14} className="text-danger" />
-              <span className="text-danger text-xs font-medium">연결 끊김</span>
+              <WifiOff size={12} />
+              <span>연결 끊김</span>
             </>
           )}
         </div>

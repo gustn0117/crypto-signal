@@ -1,9 +1,10 @@
 "use client";
 
-import { createContext, useContext } from "react";
+import { createContext, useContext, useState } from "react";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 
 type WebSocketState = ReturnType<typeof useWebSocket>;
 
@@ -21,14 +22,20 @@ export default function ClientLayout({
   children: React.ReactNode;
 }) {
   const ws = useWebSocket();
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
     <WebSocketContext.Provider value={ws}>
       <div className="flex min-h-screen bg-body">
-        <Sidebar />
+        <Sidebar
+          isDesktop={isDesktop}
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
         <div
-          className="flex-1 flex flex-col min-w-0"
-          style={{ marginLeft: "var(--sidebar-width)" }}
+          className="flex-1 flex flex-col min-w-0 transition-[margin] duration-200"
+          style={{ marginLeft: isDesktop ? "var(--sidebar-width)" : 0 }}
         >
           <Header
             connected={ws.connected}
@@ -36,9 +43,11 @@ export default function ClientLayout({
             latestAlert={ws.latestAlert}
             onClearLatest={ws.clearLatestAlert}
             onResetUnread={ws.resetUnreadAlerts}
+            isDesktop={isDesktop}
+            onMenuClick={() => setSidebarOpen(true)}
           />
           <main
-            className="flex-1 p-6 overflow-auto"
+            className="flex-1 p-4 lg:p-6 overflow-auto"
             style={{ marginTop: "var(--header-height)" }}
           >
             {children}

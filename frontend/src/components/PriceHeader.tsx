@@ -30,19 +30,19 @@ export default function PriceHeader({ symbol, ticker, signal, lastRefresh }: Pri
   const isPositive = change >= 0;
 
   return (
-    <div className="p-5 rounded-lg border border-border bg-body">
-      <div className="flex items-center justify-between">
+    <div className="cd-card">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         {/* 왼쪽: 심볼 + 가격 */}
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-5">
           <div>
-            <h2 className="text-2xl font-bold text-heading">{displaySymbol}</h2>
-            <div className="flex items-center gap-3 mt-1">
-              <span className="text-3xl font-bold text-heading">
+            <h2 className="text-xl font-bold text-heading mb-1">{displaySymbol}</h2>
+            <div className="flex items-center gap-3">
+              <span className="text-2xl font-bold text-heading font-mono">
                 ${formatPrice(price)}
               </span>
               <span
-                className={`text-lg font-semibold ${
-                  isPositive ? "text-success" : "text-danger"
+                className={`text-base font-semibold ${
+                  isPositive ? "text-success-text" : "text-danger"
                 }`}
               >
                 {isPositive ? "+" : ""}{change.toFixed(2)}%
@@ -50,16 +50,13 @@ export default function PriceHeader({ symbol, ticker, signal, lastRefresh }: Pri
             </div>
           </div>
 
-          {/* 시그널 배지 */}
           {signal && (
-            <div className="ml-4">
-              <SignalBadge signal={signal.signal} confidence={signal.confidence} size="lg" />
-            </div>
+            <SignalBadge signal={signal.signal} confidence={signal.confidence} size="lg" />
           )}
         </div>
 
         {/* 오른쪽: 24h 통계 */}
-        <div className="flex items-center gap-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 lg:gap-6">
           <StatItem label="24h 고가" value={`$${formatPrice(ticker?.high_24h || 0)}`} />
           <StatItem label="24h 저가" value={`$${formatPrice(ticker?.low_24h || 0)}`} />
           <StatItem label="24h 거래량" value={formatVolume(ticker?.volume_usdt || 0)} />
@@ -67,25 +64,25 @@ export default function PriceHeader({ symbol, ticker, signal, lastRefresh }: Pri
             <StatItem
               label="신뢰도"
               value={`${(signal.confidence * 100).toFixed(0)}%`}
-              color={signal.confidence >= 0.7 ? "#4caf50" : signal.confidence >= 0.4 ? "#ffb22b" : "#abafb3"}
+              color={signal.confidence >= 0.7 ? "var(--success-text)" : signal.confidence >= 0.4 ? "var(--warning)" : "var(--text-muted)"}
             />
-          )}
-          {lastRefresh && (
-            <div className="text-xs text-muted">
-              {new Date(lastRefresh).toLocaleTimeString("ko-KR")} 갱신
-            </div>
           )}
         </div>
       </div>
+      {lastRefresh && (
+        <div className="text-xs text-muted mt-3 pt-3 border-t border-border">
+          마지막 갱신: {new Date(lastRefresh).toLocaleTimeString("ko-KR")}
+        </div>
+      )}
     </div>
   );
 }
 
 function StatItem({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="text-center">
+    <div>
       <div className="text-xs text-muted mb-0.5">{label}</div>
-      <div className="text-sm font-semibold" style={{ color: color || "#ffffff" }}>
+      <div className="text-sm font-semibold font-mono" style={{ color: color || "#ffffff" }}>
         {value}
       </div>
     </div>

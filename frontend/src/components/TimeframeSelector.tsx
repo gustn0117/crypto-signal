@@ -17,15 +17,15 @@ const TIMEFRAMES = [
 
 export default function TimeframeSelector({ selected, onChange }: TimeframeSelectorProps) {
   return (
-    <div className="flex gap-1">
+    <div className="flex gap-1 flex-wrap">
       {TIMEFRAMES.map((tf) => (
         <button
           key={tf.value}
           onClick={() => onChange(tf.value)}
-          className={`px-3 py-1.5 text-sm rounded transition-colors ${
+          className={`px-3 py-1.5 text-xs font-medium rounded-card transition-colors ${
             selected === tf.value
-              ? "bg-blue-600 text-white"
-              : "bg-card-active text-muted hover:text-white hover:bg-[rgba(120,130,140,0.13)]"
+              ? "bg-primary text-white"
+              : "bg-card-active text-muted hover:text-heading hover:bg-card-hover"
           }`}
         >
           {tf.label}

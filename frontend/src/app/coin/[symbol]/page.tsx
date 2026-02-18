@@ -16,6 +16,7 @@ import TradeParamsCard from "@/components/TradeParamsCard";
 import MTFBadge from "@/components/MTFBadge";
 import PredictionHistoryPanel from "@/components/PredictionHistoryPanel";
 import PredictionInfoCard from "@/components/PredictionInfoCard";
+import { ChartSkeleton } from "@/components/Skeleton";
 import { usePrediction } from "@/hooks/usePrediction";
 import { ArrowLeft, RefreshCw, TrendingUp, Clock, CheckCircle } from "lucide-react";
 
@@ -57,15 +58,15 @@ export default function CoinDetailPage() {
   const displaySymbol = symbol.includes("/") ? symbol : symbol.replace("USDT", "/USDT");
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* 페이지 타이틀 바 */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
           <Link
             href="/"
-            className="text-icon-muted hover:text-heading transition-colors p-1"
+            className="p-2 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
           >
-            <ArrowLeft size={20} />
+            <ArrowLeft size={18} />
           </Link>
           <h2 className="text-lg font-semibold text-heading">{displaySymbol}</h2>
           <CoinSearch currentSymbol={symbol} />
@@ -90,18 +91,18 @@ export default function CoinDetailPage() {
       />
 
       {/* 차트 + 종합 판단 */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* 캔들 차트 */}
         <div className="lg:col-span-8">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
               <button
                 onClick={() => generate(24)}
                 disabled={generating}
                 className={`flex items-center gap-2 px-4 py-2 rounded-card text-sm font-medium transition-colors ${
                   generating
                     ? "bg-card-active text-muted cursor-not-allowed"
-                    : "bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30"
+                    : "bg-primary/15 text-primary hover:bg-primary/25 border border-primary/20"
                 }`}
               >
                 <TrendingUp size={16} className={generating ? "animate-pulse" : ""} />
@@ -129,15 +130,13 @@ export default function CoinDetailPage() {
             </div>
           </div>
           {loading && candles.length === 0 ? (
-            <div className="h-[540px] cd-card flex items-center justify-center">
-              <div className="text-muted">차트 로딩 중...</div>
-            </div>
+            <ChartSkeleton />
           ) : (
             <CandleChart candles={candles} symbol={displaySymbol} prediction={activePrediction} />
           )}
           {/* 활성 예측 실시간 추적 카드 */}
           {activePrediction && activePrediction.status === "ACTIVE" && (
-            <div className="mt-4">
+            <div className="mt-4 animate-fade-in">
               <PredictionInfoCard prediction={activePrediction} />
             </div>
           )}
@@ -147,7 +146,7 @@ export default function CoinDetailPage() {
         <div className="lg:col-span-4 space-y-4">
           <div className={`p-5 rounded-card cd-card ${
             signal?.track?.state === "CONFIRMED"
-              ? "!border-success"
+              ? "!border-success/40"
               : ""
           }`}>
             <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-4">
@@ -208,17 +207,17 @@ export default function CoinDetailPage() {
             <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
               가격 정보
             </h3>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2.5">
               <PriceStatItem label="현재가" value={`$${formatPrice(ticker?.price || 0)}`} />
               <PriceStatItem
                 label="24h 변동"
                 value={`${(ticker?.change_24h || 0) >= 0 ? "+" : ""}${(ticker?.change_24h || 0).toFixed(2)}%`}
-                color={(ticker?.change_24h || 0) >= 0 ? "#4caf50" : "#ef5350"}
+                color={(ticker?.change_24h || 0) >= 0 ? "var(--success-text)" : "var(--danger)"}
               />
               <PriceStatItem label="매수호가" value={`$${formatPrice(ticker?.bid || 0)}`} />
               <PriceStatItem label="매도호가" value={`$${formatPrice(ticker?.ask || 0)}`} />
-              <PriceStatItem label="24h 고가" value={`$${formatPrice(ticker?.high_24h || 0)}`} color="#4caf50" />
-              <PriceStatItem label="24h 저가" value={`$${formatPrice(ticker?.low_24h || 0)}`} color="#ef5350" />
+              <PriceStatItem label="24h 고가" value={`$${formatPrice(ticker?.high_24h || 0)}`} color="var(--success-text)" />
+              <PriceStatItem label="24h 저가" value={`$${formatPrice(ticker?.low_24h || 0)}`} color="var(--danger)" />
             </div>
           </div>
         </div>
@@ -285,7 +284,7 @@ function formatPrice(price: number): string {
 
 function PriceStatItem({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="p-2 rounded-card bg-card-active">
+    <div className="px-3 py-2 rounded-card bg-card-active">
       <div className="text-xs text-muted mb-0.5">{label}</div>
       <div className="text-sm font-mono font-semibold" style={{ color: color || "#ffffff" }}>
         {value}
@@ -295,14 +294,14 @@ function PriceStatItem({ label, value, color }: { label: string; value: string; 
 }
 
 function PatternCard({ name, signal, strength, description }: { name: string; signal: string; strength: number; description: string }) {
-  const color = signal === "long" ? "#4caf50" : signal === "short" ? "#ef5350" : "#abafb3";
+  const color = signal === "long" ? "var(--long)" : signal === "short" ? "var(--short)" : "var(--text-muted)";
   const label = signal === "long" ? "LONG" : signal === "short" ? "SHORT" : "NEUTRAL";
 
   return (
-    <div className="p-3 rounded-card bg-card-active" style={{ border: "1px solid var(--border)" }}>
+    <div className="p-3 rounded-card bg-card-active border border-border">
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm font-semibold text-heading">{name}</span>
-        <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ color, backgroundColor: `${color}20` }}>
+        <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ color, backgroundColor: `${signal === "long" ? "rgba(38,218,210,0.12)" : signal === "short" ? "rgba(239,83,80,0.12)" : "rgba(171,175,179,0.1)"}` }}>
           {label}
         </span>
       </div>

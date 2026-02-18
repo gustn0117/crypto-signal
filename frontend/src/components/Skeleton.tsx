@@ -48,6 +48,22 @@ export function TableSkeleton({ rows = 8 }: { rows?: number }) {
   );
 }
 
+export function SummaryCardsSkeleton() {
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="cd-card flex items-center gap-3 animate-pulse">
+          <Pulse className="w-10 h-10 rounded-lg shrink-0" />
+          <div className="flex-1 min-w-0">
+            <Pulse className="h-3 w-16 mb-1.5" />
+            <Pulse className="h-6 w-12" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function AnalysisSkeleton() {
   return (
     <div className="p-4 space-y-4">

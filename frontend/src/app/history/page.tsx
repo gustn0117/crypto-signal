@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { Signal, fetchSignalHistory } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { TableSkeleton } from "@/components/Skeleton";
+import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
 
 const PAGE_SIZE = 30;
 const SIGNAL_FILTERS = ["전체", "STRONG_LONG", "LONG", "SHORT", "STRONG_SHORT"];
@@ -59,7 +60,7 @@ export default function HistoryPage() {
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <h2 className="text-lg font-semibold text-heading">시그널 히스토리</h2>
 
       {/* 필터 */}
@@ -103,9 +104,15 @@ export default function HistoryPage() {
       {/* 테이블 */}
       <div className="cd-card p-0 overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-muted">로딩 중...</div>
+          <TableSkeleton rows={8} />
         ) : signals.length === 0 ? (
-          <div className="p-12 text-center text-muted">결과 없음</div>
+          <div className="text-center py-16">
+            <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-card-active flex items-center justify-center">
+              <Clock size={24} className="text-icon-muted" />
+            </div>
+            <p className="text-base font-medium text-heading mb-1">결과 없음</p>
+            <p className="text-sm text-muted">검색 조건에 맞는 시그널이 없습니다</p>
+          </div>
         ) : (
           <div className="overflow-auto">
             <table className="w-full text-sm cd-table">
@@ -113,12 +120,12 @@ export default function HistoryPage() {
                 <tr>
                   <th>시간</th>
                   <th>코인</th>
-                  <th>TF</th>
+                  <th className="hidden sm:table-cell">TF</th>
                   <th>시그널</th>
-                  <th>신뢰도</th>
-                  <th>가격</th>
-                  <th>SL/TP</th>
-                  <th>요약</th>
+                  <th className="hidden sm:table-cell">신뢰도</th>
+                  <th className="hidden md:table-cell">가격</th>
+                  <th className="hidden md:table-cell">SL/TP</th>
+                  <th className="hidden lg:table-cell">요약</th>
                 </tr>
               </thead>
               <tbody>
@@ -133,11 +140,11 @@ export default function HistoryPage() {
                         {sig.symbol}
                       </Link>
                     </td>
-                    <td>{sig.timeframe}</td>
+                    <td className="hidden sm:table-cell">{sig.timeframe}</td>
                     <td><SignalBadge signal={sig.signal} size="sm" /></td>
-                    <td className="text-xs">{(sig.confidence * 100).toFixed(0)}%</td>
-                    <td className="font-mono text-xs">${formatPrice(sig.current_price)}</td>
-                    <td className="text-xs">
+                    <td className="text-xs hidden sm:table-cell">{(sig.confidence * 100).toFixed(0)}%</td>
+                    <td className="font-mono text-xs hidden md:table-cell">${formatPrice(sig.current_price)}</td>
+                    <td className="text-xs hidden md:table-cell">
                       {sig.trade_params ? (
                         <div className="space-y-0.5">
                           <div className="text-danger">SL: ${formatPrice(sig.trade_params.stop_loss)}</div>
@@ -147,7 +154,7 @@ export default function HistoryPage() {
                         <span className="text-muted">-</span>
                       )}
                     </td>
-                    <td className="text-xs max-w-[250px] truncate">{sig.summary}</td>
+                    <td className="text-xs max-w-[250px] truncate hidden lg:table-cell">{sig.summary}</td>
                   </tr>
                 ))}
               </tbody>

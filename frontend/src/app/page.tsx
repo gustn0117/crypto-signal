@@ -9,7 +9,16 @@ import SignalTable from "@/components/SignalTable";
 import AnalysisPanel from "@/components/AnalysisPanel";
 import TimeframeSelector from "@/components/TimeframeSelector";
 import PredictionDashboardWidget from "@/components/PredictionDashboardWidget";
-import { ExternalLink } from "lucide-react";
+import { ChartSkeleton, AnalysisSkeleton } from "@/components/Skeleton";
+import {
+  ExternalLink,
+  CheckCircle,
+  Eye,
+  ArrowUpDown,
+  Activity,
+  BarChart3,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 export default function Dashboard() {
   const { signals: wsSignals } = useWS();
@@ -83,16 +92,16 @@ export default function Dashboard() {
   }, [timeframe]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* 상단 바 */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-lg font-semibold text-heading">대시보드</h2>
         <div className="flex items-center gap-3">
           <TimeframeSelector selected={timeframe} onChange={handleTimeframeChange} />
           <button
             onClick={handleScan}
             disabled={scanning}
-            className="px-4 py-2 bg-success-text hover:bg-success-text/80 text-white text-sm font-medium rounded-card transition-colors disabled:opacity-50"
+            className="px-4 py-2 bg-primary hover:bg-primary/80 text-white text-sm font-medium rounded-card transition-colors disabled:opacity-50"
           >
             {scanning ? "스캔 중..." : "마켓 스캔"}
           </button>
@@ -101,40 +110,44 @@ export default function Dashboard() {
 
       {/* 요약 카드 */}
       {signals.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <SummaryCard
             label="확정 시그널"
             count={signals.filter((s) => s.track?.state === "CONFIRMED").length}
             color="#26dad2"
+            icon={CheckCircle}
           />
           <SummaryCard
             label="포착 중"
             count={signals.filter((s) => s.track?.state === "FORMING" || s.track?.state === "CONFIRMING").length}
             color="#ffb22b"
+            icon={Eye}
           />
           <SummaryCard
             label="롱 / 숏"
             count={signals.filter((s) => s.signal.includes("LONG")).length}
             suffix={` / ${signals.filter((s) => s.signal.includes("SHORT")).length}`}
             color="#4680ff"
+            icon={ArrowUpDown}
           />
           <SummaryCard
             label="활성 / 관망"
             count={signals.filter((s) => s.signal !== "NEUTRAL").length}
             suffix={` / ${signals.filter((s) => s.signal === "NEUTRAL").length}`}
             color="#abafb3"
+            icon={Activity}
           />
         </div>
       )}
 
       {/* 메인 그리드 */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         {/* 좌측: 시그널 테이블 */}
-        <div className="lg:col-span-4 cd-card p-0 overflow-hidden">
+        <div className="xl:col-span-4 cd-card p-0 overflow-hidden">
           <div className="cd-card-header flex items-center justify-between">
             <span className="font-semibold text-heading">시그널 목록</span>
             <span className="text-xs text-muted">
-              {signals.filter((s) => s.signal !== "NEUTRAL").length}개 활성 / {signals.length}개 코인
+              {signals.filter((s) => s.signal !== "NEUTRAL").length}개 활성
             </span>
           </div>
           <SignalTable
@@ -145,27 +158,33 @@ export default function Dashboard() {
         </div>
 
         {/* 중앙: 차트 */}
-        <div className="lg:col-span-5 space-y-4">
+        <div className="xl:col-span-4 space-y-5">
           {selectedSymbol ? (
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-body-text">{selectedSymbol}</span>
+            <div className="animate-fade-in">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-medium text-heading">{selectedSymbol}</span>
                 <Link
                   href={`/coin/${selectedSymbol.replace("/", "")}`}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-card text-sm font-medium text-primary bg-primary/10 hover:bg-primary/20 border border-primary/30 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-card text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 transition-colors"
                 >
                   상세 분석
-                  <ExternalLink size={14} />
+                  <ExternalLink size={12} />
                 </Link>
               </div>
-              <CandleChart candles={candles} symbol={selectedSymbol} />
+              {loading ? (
+                <ChartSkeleton />
+              ) : (
+                <CandleChart candles={candles} symbol={selectedSymbol} />
+              )}
             </div>
           ) : (
             <div className="h-[540px] cd-card flex items-center justify-center">
               <div className="text-center text-body-text">
-                <div className="text-5xl mb-4">📊</div>
-                <p className="text-lg text-heading">코인을 선택하세요</p>
-                <p className="text-sm mt-1 text-muted">
+                <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-card-active flex items-center justify-center">
+                  <BarChart3 size={28} className="text-icon-muted" />
+                </div>
+                <p className="text-base font-medium text-heading mb-1">코인을 선택하세요</p>
+                <p className="text-sm text-muted">
                   왼쪽 목록에서 코인을 클릭하면 차트가 표시됩니다
                 </p>
               </div>
@@ -177,11 +196,15 @@ export default function Dashboard() {
         </div>
 
         {/* 우측: 분석 패널 */}
-        <div className="lg:col-span-3 cd-card p-0 overflow-hidden">
+        <div className="xl:col-span-4 cd-card p-0 overflow-hidden">
           <div className="cd-card-header">
             <span className="font-semibold text-heading">상세 분석</span>
           </div>
-          <AnalysisPanel signal={selectedSignal} loading={loading} />
+          {selectedSignal ? (
+            <AnalysisPanel signal={selectedSignal} loading={loading} />
+          ) : (
+            <AnalysisSkeleton />
+          )}
         </div>
       </div>
     </div>
@@ -193,17 +216,27 @@ function SummaryCard({
   count,
   color,
   suffix,
+  icon: Icon,
 }: {
   label: string;
   count: number;
   color: string;
   suffix?: string;
+  icon: LucideIcon;
 }) {
   return (
-    <div className="cd-card">
-      <div className="text-xs text-muted mb-1 uppercase tracking-wider">{label}</div>
-      <div className="text-2xl font-bold" style={{ color }}>
-        {count}{suffix}
+    <div className="cd-card flex items-center gap-3">
+      <div
+        className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+        style={{ backgroundColor: `${color}15` }}
+      >
+        <Icon size={20} style={{ color }} />
+      </div>
+      <div className="min-w-0">
+        <div className="text-xs text-muted mb-0.5 uppercase tracking-wider truncate">{label}</div>
+        <div className="text-xl font-bold" style={{ color }}>
+          {count}{suffix}
+        </div>
       </div>
     </div>
   );
