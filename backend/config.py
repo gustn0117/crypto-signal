@@ -12,7 +12,7 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", 8000))
 
 # Scanner
-SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", 60))  # auto-deploy test
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", 60))
 MIN_VOLUME_USDT = float(os.getenv("MIN_VOLUME_USDT", 1_000_000))
 SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", 10))
 
