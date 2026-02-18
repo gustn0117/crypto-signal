@@ -27,7 +27,7 @@ def run_deploy():
         # 1) git pull
         print("[deploy] step 1/4: git pull", flush=True)
         r = subprocess.run(
-            ["git", "pull", "--ff-only"], cwd="/repo",
+            ["git", "pull", "origin", "main"], cwd="/repo",
             capture_output=True, text=True, timeout=60,
         )
         print(f"[deploy] git pull: {r.stdout.strip()}", flush=True)
