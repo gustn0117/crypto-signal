@@ -1,0 +1,10 @@
+services:
+  deployer:
+    build: .
+    container_name: coin-deployer
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/server/crypto-signal:/repo
