@@ -5,10 +5,10 @@
 @tailwind utilities;
 
 :root {
-  --bg-body: #070713;
-  --bg-card: #0b0c21;
-  --bg-active: #10112d;
-  --bg-hover: #0d0e24;
+  --bg-body: #0a0b1a;
+  --bg-card: #0e0f28;
+  --bg-active: #131435;
+  --bg-hover: #10112b;
   --border: rgba(120, 130, 140, 0.13);
   --border-hover: rgba(120, 130, 140, 0.28);
   --text-heading: #ffffff;
