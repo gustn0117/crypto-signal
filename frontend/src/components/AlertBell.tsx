@@ -159,7 +159,7 @@ export default function AlertBell({ unreadCount, latestAlert, onClearLatest, onR
                   </div>
                   <div className="flex items-center gap-3 text-xs text-muted">
                     <span>신뢰도 {(alert.confidence * 100).toFixed(0)}%</span>
-                    <span>${alert.current_price.toLocaleString()}</span>
+                    <span>${alert.current_price?.toLocaleString() ?? "-"}</span>
                   </div>
                   {alert.summary && (
                     <p className="text-xs text-muted mt-1 truncate">{alert.summary}</p>

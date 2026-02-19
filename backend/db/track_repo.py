@@ -65,6 +65,8 @@ class SignalTrackRepo:
             "current_price": price,
         }
         resp = await self._tracks().insert(data).execute()
+        if not resp.data:
+            raise RuntimeError(f"트랙 생성 실패: {symbol}/{timeframe}")
         track_id = resp.data[0]["id"]
 
         # 전환 로그 (None → FORMING)

@@ -104,7 +104,10 @@ class AlertRepo:
             if not resp.data:
                 return False  # 쿨다운 아님 → 알림 발송 가능
 
-            last_ts = datetime.fromisoformat(resp.data[0]["timestamp"].replace("Z", "+00:00"))
+            raw_ts = resp.data[0]["timestamp"]
+            if raw_ts.endswith("Z"):
+                raw_ts = raw_ts[:-1] + "+00:00"
+            last_ts = datetime.fromisoformat(raw_ts)
             elapsed = (cutoff - last_ts).total_seconds()
             return elapsed < cooldown_minutes * 60  # True면 쿨다운 중
         except Exception as e:

@@ -203,9 +203,9 @@ class MarketScanner:
             except Exception as e:
                 logger.error(f"시그널 저장 실패: {e}")
 
-        # 7) in-memory 상태 갱신 (타임프레임별)
-        self.latest_signals[timeframe] = signals
-        self.latest_transitions = all_transitions
+        # 7) in-memory 상태 갱신 (타임프레임별, 스냅샷 복사)
+        self.latest_signals[timeframe] = list(signals)
+        self.latest_transitions = list(all_transitions)
         self.last_scan_time = datetime.now(timezone.utc).isoformat()
 
         confirmed = sum(1 for s in signals if s.get("track", {}).get("state") == "CONFIRMED")

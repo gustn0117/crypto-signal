@@ -109,7 +109,8 @@ TICKER_CACHE_TTL = 15  # 15초
 def _normalize_symbol(symbol: str) -> str:
     """심볼 정규화: BTCUSDT -> BTC/USDT"""
     if "/" not in symbol:
-        symbol = symbol.replace("USDT", "/USDT")
+        if symbol.endswith("USDT"):
+            symbol = symbol[:-4] + "/USDT"
     return symbol
 
 
@@ -435,8 +436,8 @@ async def update_prediction_progress():
                 ticker = _ticker_cache.get(symbol)
                 if not ticker:
                     continue
-                current_price = ticker.get("last", 0)
-                if not current_price:
+                current_price = ticker.get("last")
+                if current_price is None:
                     continue
 
                 # PnL %
@@ -1250,7 +1251,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
         while True:
             data = await websocket.receive_text()
-            message = json.loads(data)
+            try:
+                message = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("WS 잘못된 JSON 수신: %s", data[:100])
+                continue
 
             if message.get("type") == "subscribe":
                 symbol = message.get("symbol", "BTC/USDT")
@@ -1323,7 +1328,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
 
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
         client_subscriptions.pop(websocket, None)
         logger.info("WebSocket 연결 해제 (%d명 접속 중)", len(connected_clients))
 

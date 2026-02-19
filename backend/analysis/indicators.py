@@ -60,6 +60,9 @@ def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
         signal_line = macd_df.iloc[:, 1]
         histogram = macd_df.iloc[:, 2]
 
+        if len(macd_line.dropna()) < 2:
+            return IndicatorResult("MACD", "neutral", 0.0, 0.0, "데이터 부족")
+
         curr_macd = macd_line.iloc[-1]
         prev_macd = macd_line.iloc[-2]
         curr_signal = signal_line.iloc[-1]
@@ -144,6 +147,9 @@ def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int 
         ema_long = ta.ema(df["close"], length=long_period)
 
         if ema_short is None or ema_long is None:
+            return IndicatorResult("EMA", "neutral", 0.0, 0.0, "데이터 부족")
+
+        if len(ema_short.dropna()) < 2 or len(ema_long.dropna()) < 2:
             return IndicatorResult("EMA", "neutral", 0.0, 0.0, "데이터 부족")
 
         curr_short = ema_short.iloc[-1]

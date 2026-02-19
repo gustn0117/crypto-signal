@@ -24,11 +24,22 @@ export default function PredictionInfoCard({ prediction }: PredictionInfoCardPro
 
   const regimeInfo = prediction.regime ? REGIME_LABELS[prediction.regime] : null;
 
+  const tpPct = (tp: number) => {
+    const diff = isLong ? tp - prediction.entry_price : prediction.entry_price - tp;
+    return (diff / prediction.entry_price) * 100;
+  };
+  const slPct = (() => {
+    const diff = isLong
+      ? prediction.entry_price - prediction.stop_loss
+      : prediction.stop_loss - prediction.entry_price;
+    return (diff / prediction.entry_price) * 100;
+  })();
+
   const tpChecks = {
-    tp1: pnl !== null && pnl >= ((Math.abs(prediction.take_profit_1 - prediction.entry_price) / prediction.entry_price) * 100),
-    tp2: pnl !== null && pnl >= ((Math.abs(prediction.take_profit_2 - prediction.entry_price) / prediction.entry_price) * 100),
-    tp3: pnl !== null && pnl >= ((Math.abs(prediction.take_profit_3 - prediction.entry_price) / prediction.entry_price) * 100),
-    sl: pnl !== null && pnl <= -((Math.abs(prediction.stop_loss - prediction.entry_price) / prediction.entry_price) * 100),
+    tp1: pnl !== null && pnl >= tpPct(prediction.take_profit_1),
+    tp2: pnl !== null && pnl >= tpPct(prediction.take_profit_2),
+    tp3: pnl !== null && pnl >= tpPct(prediction.take_profit_3),
+    sl: pnl !== null && pnl <= -slPct,
   };
 
   const createdAt = new Date(prediction.created_at);

@@ -48,7 +48,7 @@ export function useWebSocket() {
         } else if (message.type === "prediction_created") {
           setPredictionCreated(message.data);
         } else if (message.type === "prediction_progress") {
-          setPredictionProgress(message.data);
+          setPredictionProgress(Array.isArray(message.data) ? message.data : []);
         } else if (message.type === "prediction_verified") {
           setPredictionVerified(message.data);
         }

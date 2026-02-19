@@ -296,11 +296,14 @@ export async function fetchAlerts(limit = 50, unreadOnly = false): Promise<{
 }
 
 export async function markAlertsRead(alertIds: number[] = []): Promise<void> {
-  await fetch(`${API_BASE}/api/alerts/read`, {
+  const res = await fetch(`${API_BASE}/api/alerts/read`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ alert_ids: alertIds }),
   });
+  if (!res.ok) {
+    throw new Error(`알림 읽음 처리 실패: HTTP ${res.status}`);
+  }
 }
 
 export async function fetchAlertConfig(): Promise<AlertConfig> {
