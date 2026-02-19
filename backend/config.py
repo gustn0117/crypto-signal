@@ -16,9 +16,9 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", 30))
 MIN_VOLUME_USDT = float(os.getenv("MIN_VOLUME_USDT", 1_000_000))
 SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", 15))
 
-# 동적 심볼 스캔 설정
-DYNAMIC_SYMBOLS = os.getenv("DYNAMIC_SYMBOLS", "true").lower() == "true"
-SCAN_TOP_N = int(os.getenv("SCAN_TOP_N", 30))
+# 동적 심볼 스캔 설정 (false → 고정 10개만 스캔)
+DYNAMIC_SYMBOLS = os.getenv("DYNAMIC_SYMBOLS", "false").lower() == "true"
+SCAN_TOP_N = int(os.getenv("SCAN_TOP_N", 0))
 
 # 고정 스캔 대상 (항상 포함되는 코어 코인)
 SCAN_SYMBOLS = [
