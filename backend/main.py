@@ -100,6 +100,9 @@ _market_context: dict = {}
 # OI 히스토리 캐시 (심볼 -> 이전 OI 값)
 _oi_history: Dict[str, float] = {}
 
+# 서버 시작(배포) 시간
+_server_started_at: str = datetime.now(timezone.utc).isoformat()
+
 # 배치 티커 캐시
 _ticker_cache: Dict[str, dict] = {}
 _ticker_cache_at: Optional[datetime] = None
@@ -808,6 +811,8 @@ async def health_check():
     # 읽지 않은 알림 수 (DB)
     if alert_repo:
         checks["pending_alerts"] = await alert_repo.get_unread_count()
+
+    checks["server_started_at"] = _server_started_at
 
     status = "healthy" if checks["database"] and checks["exchange"] else "degraded"
     return {"status": status, "checks": checks}

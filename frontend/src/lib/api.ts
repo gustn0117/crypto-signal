@@ -217,6 +217,13 @@ export interface PredictionProgress {
 
 // ─── REST API 호출 ────────────────────────────────────
 
+export async function fetchHealth(): Promise<{
+  status: string;
+  checks: { server_started_at?: string; [key: string]: unknown };
+}> {
+  return fetchWithError(`${API_BASE}/api/health`);
+}
+
 export async function fetchTicker(symbol: string): Promise<Ticker> {
   const encoded = encodeURIComponent(symbol.replace("/", ""));
   return fetchWithError<Ticker>(`${API_BASE}/api/ticker/${encoded}`);

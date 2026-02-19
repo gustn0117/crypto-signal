@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { fetchHealth } from "@/lib/api";
 import {
   LayoutDashboard,
   History,
@@ -25,9 +26,28 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+function formatDeployTime(isoStr: string): string {
+  const d = new Date(isoStr);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${mm}/${dd} ${hh}:${mi}`;
+}
+
 export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [deployTime, setDeployTime] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchHealth()
+      .then((data) => {
+        const started = data.checks?.server_started_at;
+        if (typeof started === "string") setDeployTime(started);
+      })
+      .catch(() => {});
+  }, []);
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
@@ -92,6 +112,11 @@ export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
               })}
             </ul>
           </nav>
+          {deployTime && (
+            <div className="px-5 py-3 text-[10px] text-muted border-t" style={{ borderColor: "var(--border)" }}>
+              배포: {formatDeployTime(deployTime)}
+            </div>
+          )}
         </aside>
       </>
     );
@@ -149,6 +174,13 @@ export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
           })}
         </ul>
       </nav>
+
+      {/* Deploy time */}
+      {deployTime && !collapsed && (
+        <div className="px-3 py-2 text-[10px] text-muted border-t" style={{ borderColor: "var(--border)" }}>
+          배포: {formatDeployTime(deployTime)}
+        </div>
+      )}
 
       {/* Collapse toggle */}
       <button
