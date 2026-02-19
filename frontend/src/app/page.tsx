@@ -21,21 +21,18 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 export default function Dashboard() {
-  const { signals: wsSignals } = useWS();
+  const { signalsByTf } = useWS();
 
-  const [signals, setSignals] = useState<Signal[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   const [selectedSignal, setSelectedSignal] = useState<Signal | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [timeframe, setTimeframe] = useState("1h");
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [manualSignals, setManualSignals] = useState<Signal[] | null>(null);
 
-  useEffect(() => {
-    if (wsSignals.length > 0) {
-      setSignals(wsSignals);
-    }
-  }, [wsSignals]);
+  // 선택된 타임프레임의 시그널만 표시
+  const signals = manualSignals || signalsByTf[timeframe] || [];
 
   const handleSelectSymbol = useCallback(
     async (symbol: string) => {
@@ -83,12 +80,17 @@ export default function Dashboard() {
     setScanning(true);
     try {
       const result = await scanMarket(timeframe);
-      setSignals(result);
+      setManualSignals(result);
     } catch (error) {
       console.error("스캔 실패:", error);
     } finally {
       setScanning(false);
     }
+  }, [timeframe]);
+
+  // 타임프레임 변경 시 수동 스캔 결과 초기화
+  useEffect(() => {
+    setManualSignals(null);
   }, [timeframe]);
 
   return (

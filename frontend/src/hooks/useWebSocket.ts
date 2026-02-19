@@ -9,7 +9,7 @@ const MAX_RECONNECT_DELAY = 30000;
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [signals, setSignals] = useState<Signal[]>([]);
+  const [signalsByTf, setSignalsByTf] = useState<Record<string, Signal[]>>({});
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [analysis, setAnalysis] = useState<Signal | null>(null);
   const [unreadAlerts, setUnreadAlerts] = useState(0);
@@ -35,7 +35,9 @@ export function useWebSocket() {
         const message = JSON.parse(event.data);
 
         if (message.type === "initial" || message.type === "scan_update") {
-          setSignals(message.data.signals || []);
+          const tf = message.data.timeframe || "1h";
+          const newSignals = message.data.signals || [];
+          setSignalsByTf((prev) => ({ ...prev, [tf]: newSignals }));
           setLastUpdate(message.data.last_scan_time || "");
           if (message.data.unread_alerts !== undefined) {
             setUnreadAlerts(message.data.unread_alerts);
@@ -116,7 +118,7 @@ export function useWebSocket() {
 
   return {
     connected,
-    signals,
+    signalsByTf,
     lastUpdate,
     analysis,
     unreadAlerts,

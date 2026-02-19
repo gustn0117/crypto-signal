@@ -56,6 +56,10 @@ class MarketScanner:
         self._candle_cache: Dict[str, tuple] = {}
         self._cache_ttl = 25  # 25초 TTL
 
+        # 시그널 안정성: 이전 스캔에서 활성이었던 시그널 유지 (TF -> {symbol: grace_count})
+        self._signal_grace: Dict[str, Dict[str, int]] = {}
+        self._GRACE_MAX = 2  # NEUTRAL로 바뀌어도 2회 스캔까지 유지
+
     async def _get_markets(self) -> List[dict]:
         """TTL 기반 마켓 리스트 캐싱"""
         now = datetime.now(timezone.utc)
@@ -208,17 +212,43 @@ class MarketScanner:
             except Exception as e:
                 logger.warning(f"트랙 병합 실패: {e}")
 
-        # 5) 신뢰도 순 정렬
+        # 5) 시그널 안정성: 이전에 활성이었던 시그널이 NEUTRAL이 되어도 grace period 유지
+        prev_signals = {s["symbol"]: s for s in self.latest_signals.get(timeframe, [])}
+        current_symbols = {s["symbol"] for s in signals}
+        grace = self._signal_grace.get(timeframe, {})
+        new_grace: Dict[str, int] = {}
+
+        for sym, prev_sig in prev_signals.items():
+            if sym not in current_symbols and prev_sig["signal"] != "NEUTRAL":
+                # 이전에 활성이었는데 이번에 없음 → grace 카운터
+                count = grace.get(sym, 0) + 1
+                if count <= self._GRACE_MAX:
+                    new_grace[sym] = count
+                    # 이전 시그널을 fading으로 유지 (신뢰도 감소)
+                    faded = dict(prev_sig)
+                    faded["confidence"] = max(0.1, prev_sig["confidence"] * 0.7)
+                    faded["_fading"] = True
+                    signals.append(faded)
+            elif sym in current_symbols:
+                # 현재 활성 → grace 리셋
+                cur = next((s for s in signals if s["symbol"] == sym), None)
+                if cur and cur["signal"] != "NEUTRAL":
+                    new_grace.pop(sym, None)
+
+        self._signal_grace[timeframe] = new_grace
+
+        # 6) 신뢰도 순 정렬
         signals.sort(key=lambda x: x["confidence"], reverse=True)
 
-        # 6) DB 저장
-        if signals:
+        # 7) DB 저장 (fading 시그널은 제외)
+        save_signals = [s for s in signals if not s.get("_fading")]
+        if save_signals:
             try:
-                await self.signal_repo.save_signals_batch(signals, scan_id)
+                await self.signal_repo.save_signals_batch(save_signals, scan_id)
             except Exception as e:
                 logger.error(f"시그널 저장 실패: {e}")
 
-        # 7) in-memory 상태 갱신 (타임프레임별, 스냅샷 복사)
+        # 8) in-memory 상태 갱신 (타임프레임별, 스냅샷 복사)
         self.latest_signals[timeframe] = list(signals)
         self.latest_transitions = list(all_transitions)
         self.last_scan_time = datetime.now(timezone.utc).isoformat()
