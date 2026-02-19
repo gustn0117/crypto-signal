@@ -104,18 +104,50 @@ class PredictionRepo:
         self,
         symbol: str = None,
         status: str = None,
+        direction: str = None,
+        timeframe: str = None,
+        result: str = None,
         limit: int = 20,
         offset: int = 0,
     ) -> list[dict]:
-        """예측 히스토리 조회"""
+        """예측 히스토리 조회 (필터 확장)"""
         query = self._table().select("*")
         if symbol:
             query = query.eq("symbol", symbol)
         if status:
             query = query.eq("status", status)
+        if direction:
+            query = query.eq("signal_direction", direction)
+        if timeframe:
+            query = query.eq("timeframe", timeframe)
+        if result:
+            query = query.eq("result", result)
         query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
         resp = await query.execute()
         return resp.data
+
+    async def get_predictions_count(
+        self,
+        symbol: str = None,
+        status: str = None,
+        direction: str = None,
+        timeframe: str = None,
+        result: str = None,
+    ) -> int:
+        """예측 총 개수 (페이지네이션용)"""
+        query = self._table().select("id", count="exact")
+        if symbol:
+            query = query.eq("symbol", symbol)
+        if status:
+            query = query.eq("status", status)
+        if direction:
+            query = query.eq("signal_direction", direction)
+        if timeframe:
+            query = query.eq("timeframe", timeframe)
+        if result:
+            query = query.eq("result", result)
+        resp = await query.execute()
+        return resp.count or 0
 
     async def get_pending_verifications(self) -> list[dict]:
         """검증 대기 중인 활성 예측 조회"""

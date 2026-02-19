@@ -397,6 +397,31 @@ export async function fetchPredictionDashboard(): Promise<PredictionDashboardSta
   return fetchWithError(`${API_BASE}/api/predictions/dashboard`);
 }
 
+export async function fetchAllPredictions(params: {
+  status?: string;
+  direction?: string;
+  timeframe?: string;
+  result?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<{ predictions: Prediction[]; total: number }> {
+  const query = new URLSearchParams();
+  if (params.status) query.set("status", params.status);
+  if (params.direction) query.set("direction", params.direction);
+  if (params.timeframe) query.set("timeframe", params.timeframe);
+  if (params.result) query.set("result", params.result);
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  return fetchWithError(`${API_BASE}/api/predictions/all?${query}`);
+}
+
+export async function fetchAllActivePredictions(): Promise<{
+  predictions: Prediction[];
+  total: number;
+}> {
+  return fetchWithError(`${API_BASE}/api/predictions/active`);
+}
+
 export async function verifyPrediction(predictionId: number): Promise<Prediction> {
   const res = await fetch(
     `${API_BASE}/api/predictions/${predictionId}/verify`,

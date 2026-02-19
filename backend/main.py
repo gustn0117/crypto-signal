@@ -1342,6 +1342,26 @@ async def get_prediction_dashboard():
     return stats
 
 
+@app.get("/api/predictions/all")
+async def get_all_predictions(
+    status: str = Query(default=None),
+    direction: str = Query(default=None),
+    timeframe: str = Query(default=None),
+    result: str = Query(default=None),
+    limit: int = Query(default=20, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """전체 코인의 예측 조회 (필터 + 페이지네이션)"""
+    predictions = await prediction_repo.get_predictions_history(
+        status=status, direction=direction, timeframe=timeframe,
+        result=result, limit=limit, offset=offset,
+    )
+    total = await prediction_repo.get_predictions_count(
+        status=status, direction=direction, timeframe=timeframe, result=result,
+    )
+    return {"predictions": predictions, "total": total}
+
+
 @app.get("/api/predictions/active")
 async def get_all_active_predictions():
     predictions = await prediction_repo.get_all_active_predictions()
