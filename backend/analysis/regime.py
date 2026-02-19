@@ -69,7 +69,9 @@ def detect_regime(df: pd.DataFrame) -> MarketRegime:
         if ema21 is not None and not ema21.empty:
             ema_vals = ema21.dropna()
             if len(ema_vals) >= 6:
-                ema_slope = (float(ema_vals.iloc[-1]) - float(ema_vals.iloc[-5])) / float(ema_vals.iloc[-5]) * 100
+                ema_base = float(ema_vals.iloc[-5])
+                if ema_base > 0 and not pd.isna(ema_base):
+                    ema_slope = (float(ema_vals.iloc[-1]) - ema_base) / ema_base * 100
 
         # 5. 변동성 순위
         volatility_rank = min(atr_ratio / 2.0, 1.0)

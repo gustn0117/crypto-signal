@@ -17,6 +17,7 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
   const [filtered, setFiltered] = useState<Market[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -24,9 +25,10 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
 
   useEffect(() => {
     setLoading(true);
+    setLoadError(false);
     fetchMarkets()
       .then(setMarkets)
-      .catch(console.error)
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
   }, []);
 
@@ -128,7 +130,26 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
         )}
       </div>
 
-      {isOpen && filtered.length > 0 && (
+      {isOpen && loadError && (
+        <div className="absolute top-full left-0 mt-1 w-[calc(100vw-2rem)] sm:w-80 bg-card border border-border rounded-lg shadow-dropdown z-50 p-4 text-center">
+          <p className="text-sm text-danger mb-2">마켓 데이터 로드 실패</p>
+          <button
+            onClick={() => {
+              setLoading(true);
+              setLoadError(false);
+              fetchMarkets()
+                .then(setMarkets)
+                .catch(() => setLoadError(true))
+                .finally(() => setLoading(false));
+            }}
+            className="text-xs text-primary hover:underline"
+          >
+            다시 시도
+          </button>
+        </div>
+      )}
+
+      {isOpen && !loadError && filtered.length > 0 && (
         <div
           ref={listRef}
           id={listId}

@@ -19,8 +19,12 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
   const normalizedRef = useRef(normalizedSymbol);
   normalizedRef.current = normalizedSymbol;
 
+  // 요청 ID로 race condition 방지
+  const requestIdRef = useRef(0);
+
   const loadData = useCallback(
     async (tf: string) => {
+      const reqId = ++requestIdRef.current;
       setLoading(true);
       setError(null);
       try {
@@ -29,16 +33,19 @@ export function useCoinDetail(symbol: string, initialTimeframe: string = "1h") {
           fetchOHLCV(normalizedRef.current, tf),
           fetchTicker(normalizedRef.current),
         ]);
+        // 오래된 응답 무시 (타임프레임/심볼 변경 시)
+        if (reqId !== requestIdRef.current) return;
         setSignal(analysisData);
         setCandles(ohlcvData);
         setTicker(tickerData);
         setLastRefresh(new Date().toISOString());
       } catch (err) {
+        if (reqId !== requestIdRef.current) return;
         const message = err instanceof Error ? err.message : "데이터를 불러오는 데 실패했습니다";
         setError(message);
         console.error("데이터 로드 실패:", err);
       } finally {
-        setLoading(false);
+        if (reqId === requestIdRef.current) setLoading(false);
       }
     },
     []

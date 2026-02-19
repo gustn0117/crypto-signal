@@ -105,9 +105,15 @@ class MarketScanner:
                 return df
         return None
 
+    _CANDLE_CACHE_MAX = 150  # 최대 캐시 엔트리 수
+
     def _set_cached_candle(self, symbol: str, timeframe: str, df):
-        """캔들 캐시 저장"""
+        """캔들 캐시 저장 (LRU 제한)"""
         key = f"{symbol}_{timeframe}"
+        # 캐시 크기 제한: 가장 오래된 항목 제거
+        if len(self._candle_cache) >= self._CANDLE_CACHE_MAX and key not in self._candle_cache:
+            oldest_key = min(self._candle_cache, key=lambda k: self._candle_cache[k][1])
+            del self._candle_cache[oldest_key]
         self._candle_cache[key] = (df, datetime.now(timezone.utc))
 
     async def scan_market(self, timeframe: str = "1h") -> List[dict]:

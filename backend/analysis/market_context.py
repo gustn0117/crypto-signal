@@ -94,9 +94,9 @@ async def build_market_context(
         context["market_momentum"] = momentum
 
     # 3. BTC 도미넌스 변화
-    if btc_ticker and all_tickers:
-        btc_change = btc_ticker.get("change_24h", 0)
-        avg_change = sum(t.get("change_24h", 0) or 0 for t in all_tickers) / max(len(all_tickers), 1)
+    if btc_ticker and all_tickers and len(all_tickers) > 0:
+        btc_change = btc_ticker.get("change_24h", 0) or 0
+        avg_change = sum(t.get("change_24h", 0) or 0 for t in all_tickers) / len(all_tickers)
         dom_change = calculate_btc_dominance_change(btc_change, avg_change)
         if dom_change is not None:
             context["btc_dominance_change"] = dom_change

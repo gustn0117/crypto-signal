@@ -162,7 +162,7 @@ export default function HistoryPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setPage(Math.max(0, page - 1))}
-              disabled={page === 0}
+              disabled={page === 0 || loading}
               className="p-2 rounded-card border border-border hover:bg-card-active disabled:opacity-30 transition-colors"
             >
               <ChevronLeft size={16} />
@@ -170,7 +170,7 @@ export default function HistoryPage() {
             <span className="text-sm text-muted">{page + 1} / {totalPages}</span>
             <button
               onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
-              disabled={page >= totalPages - 1}
+              disabled={page >= totalPages - 1 || loading}
               className="p-2 rounded-card border border-border hover:bg-card-active disabled:opacity-30 transition-colors"
             >
               <ChevronRight size={16} />

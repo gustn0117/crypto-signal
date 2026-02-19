@@ -107,6 +107,8 @@ _server_started_at: str = datetime.now(timezone.utc).isoformat()
 _ticker_cache: Dict[str, dict] = {}
 _ticker_cache_at: Optional[datetime] = None
 TICKER_CACHE_TTL = 15  # 15초
+_ticker_cache_lock = asyncio.Lock()
+_market_context_lock = asyncio.Lock()
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -140,21 +142,24 @@ async def _broadcast_ws(message: str):
 
 
 async def _refresh_ticker_cache():
-    """배치 티커 캐시 갱신 (전체 심볼 한 번에)"""
+    """배치 티커 캐시 갱신 (전체 심볼 한 번에, Lock 보호)"""
     global _ticker_cache, _ticker_cache_at
-    now = datetime.now(timezone.utc)
-    if _ticker_cache_at and (now - _ticker_cache_at).total_seconds() < TICKER_CACHE_TTL:
-        return
-    try:
-        await async_client.ensure_markets()
-        tickers = await async_client.exchange.fetch_tickers()
-        _ticker_cache = {}
-        for sym, t in tickers.items():
-            base = sym.split(":")[0] if ":" in sym else sym
-            _ticker_cache[base] = t
-        _ticker_cache_at = now
-    except Exception as e:
-        logger.warning("배치 티커 갱신 실패: %s", e)
+    async with _ticker_cache_lock:
+        now = datetime.now(timezone.utc)
+        if _ticker_cache_at and (now - _ticker_cache_at).total_seconds() < TICKER_CACHE_TTL:
+            return
+        try:
+            await async_client.ensure_markets()
+            tickers = await async_client.exchange.fetch_tickers()
+            new_cache: Dict[str, dict] = {}
+            for sym, t in tickers.items():
+                # 키 통일: "BTC/USDT" 형식으로 저장 (콜론 제거)
+                clean = sym.split(":")[0] if ":" in sym else sym
+                new_cache[clean] = t
+            _ticker_cache = new_cache
+            _ticker_cache_at = now
+        except Exception as e:
+            logger.warning("배치 티커 갱신 실패: %s", e)
 
 
 async def _push_transition_alert(transition: dict):
@@ -359,15 +364,17 @@ async def scheduled_scan_tf(timeframe: str):
             btc_ticker = None
             all_tickers = []
             await _refresh_ticker_cache()
-            btc_ticker = _ticker_cache.get("BTC/USDT")
-            all_tickers = [{"change_24h": t.get("percentage", 0)} for t in _ticker_cache.values()]
+            btc_ticker = _ticker_cache.get("BTC/USDT") or _ticker_cache.get("BTC/USDT:USDT")
+            all_tickers = [{"change_24h": t.get("percentage", 0) or 0} for t in _ticker_cache.values()]
 
-            _market_context = await build_market_context(
+            ctx = await build_market_context(
                 latest_signals=signals_1h,
                 btc_ticker={"change_24h": btc_ticker.get("percentage", 0)} if btc_ticker else None,
                 all_tickers=all_tickers,
             )
-            engine.set_market_context(_market_context)
+            async with _market_context_lock:
+                _market_context = ctx
+            engine.set_market_context(ctx)
         except Exception as e:
             logger.warning("시장 맥락 갱신 실패: %s", e)
 
@@ -443,6 +450,10 @@ async def update_prediction_progress():
                 if current_price is None:
                     continue
 
+                # entry_price 유효성 검사
+                if not entry_price or entry_price <= 0:
+                    continue
+
                 # PnL %
                 if is_long:
                     pnl_pct = ((current_price - entry_price) / entry_price) * 100
@@ -450,9 +461,11 @@ async def update_prediction_progress():
                     pnl_pct = ((entry_price - current_price) / entry_price) * 100
 
                 # R:R
-                risk = abs(entry_price - sl) if sl else atr
+                risk = abs(entry_price - sl) if sl and sl > 0 else atr
+                if risk <= 0:
+                    risk = max(atr, entry_price * 0.01)
                 reward = abs(current_price - entry_price)
-                rr_current = (reward / risk) if risk > 0 else 0
+                rr_current = reward / risk
 
                 # 시간 진행률
                 created = datetime.fromisoformat(pred["created_at"])
@@ -578,63 +591,75 @@ async def _verify_single_prediction(prediction: dict) -> dict:
 
     if is_long:
         max_favorable = max(
-            ((row["high"] - entry_price) / entry_price) * 100
-            for _, row in actual_candles.iterrows()
+            (((row["high"] - entry_price) / entry_price) * 100
+             for _, row in actual_candles.iterrows()),
+            default=0.0,
         )
         max_adverse = max(
-            ((entry_price - row["low"]) / entry_price) * 100
-            for _, row in actual_candles.iterrows()
+            (((entry_price - row["low"]) / entry_price) * 100
+             for _, row in actual_candles.iterrows()),
+            default=0.0,
         )
     else:
         max_favorable = max(
-            ((entry_price - row["low"]) / entry_price) * 100
-            for _, row in actual_candles.iterrows()
+            (((entry_price - row["low"]) / entry_price) * 100
+             for _, row in actual_candles.iterrows()),
+            default=0.0,
         )
         max_adverse = max(
-            ((row["high"] - entry_price) / entry_price) * 100
-            for _, row in actual_candles.iterrows()
+            (((row["high"] - entry_price) / entry_price) * 100
+             for _, row in actual_candles.iterrows()),
+            default=0.0,
         )
 
     final_price = float(actual_candles["close"].iloc[-1])
 
+    # TP를 먼저 체크 (TP3 → TP2 → TP1 → SL 순서)
+    # 같은 캔들에서 TP와 SL 동시 도달 시 TP 우선
     if is_long:
-        if actual_candles["low"].min() <= sl:
-            result = "HIT_SL"
-        elif actual_candles["high"].max() >= tp3:
+        high_max = actual_candles["high"].max()
+        low_min = actual_candles["low"].min()
+        if high_max >= tp3:
             result = "HIT_TP3"
-        elif actual_candles["high"].max() >= tp2:
+        elif high_max >= tp2:
             result = "HIT_TP2"
-        elif actual_candles["high"].max() >= tp1:
+        elif high_max >= tp1:
             result = "HIT_TP1"
+        elif low_min <= sl:
+            result = "HIT_SL"
         elif final_price > entry_price:
             result = "PARTIAL"
         else:
             result = "WRONG"
     else:
-        if actual_candles["high"].max() >= sl:
-            result = "HIT_SL"
-        elif actual_candles["low"].min() <= tp3:
+        high_max = actual_candles["high"].max()
+        low_min = actual_candles["low"].min()
+        if low_min <= tp3:
             result = "HIT_TP3"
-        elif actual_candles["low"].min() <= tp2:
+        elif low_min <= tp2:
             result = "HIT_TP2"
-        elif actual_candles["low"].min() <= tp1:
+        elif low_min <= tp1:
             result = "HIT_TP1"
+        elif high_max >= sl:
+            result = "HIT_SL"
         elif final_price < entry_price:
             result = "PARTIAL"
         else:
             result = "WRONG"
 
-    predicted_path = prediction["predicted_path"]
+    predicted_path = prediction.get("predicted_path") or []
     actual_map = {p["time"]: p["price"] for p in actual_path}
     scores = []
     for point in predicted_path:
-        t = point["time"]
-        pred_price = point["price"]
+        t = point.get("time")
+        pred_price = point.get("price")
+        if t is None or pred_price is None:
+            continue
         actual_price = actual_map.get(t)
         if actual_price is None:
-            closest_t = min(actual_map.keys(), key=lambda at: abs(at - t), default=None)
-            if closest_t is None:
+            if not actual_map:
                 continue
+            closest_t = min(actual_map.keys(), key=lambda at: abs(at - t))
             actual_price = actual_map[closest_t]
         error = abs(pred_price - actual_price)
         score = max(0.0, 1.0 - error / (2.0 * atr)) if atr > 0 else 0.0
