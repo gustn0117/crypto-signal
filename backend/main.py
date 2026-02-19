@@ -937,6 +937,24 @@ async def _get_futures_cached(symbol: str) -> list:
     return data
 
 
+def _enrich_signal_result(result: dict, symbol: str, signal_name: str, confidence: float) -> dict:
+    """시그널 결과에 품질 점수 추가 (백테스트 승률 + BTC 베타)"""
+    quality = {}
+    if backtest_engine and signal_name != "NEUTRAL":
+        wr = backtest_engine.get_signal_win_rate(signal_name, confidence)
+        if wr:
+            quality["signal_win_rate"] = wr.get("signal_win_rate")
+            quality["signal_total"] = wr.get("signal_total")
+            quality["confidence_win_rate"] = wr.get("confidence_win_rate")
+    if correlation_analyzer and symbol != "BTC/USDT":
+        beta = correlation_analyzer.get_beta(symbol)
+        if beta is not None:
+            quality["btc_beta"] = beta
+    if quality:
+        result["quality"] = quality
+    return result
+
+
 @app.get("/api/analyze/{symbol}")
 async def analyze_symbol(
     symbol: str,
@@ -945,15 +963,23 @@ async def analyze_symbol(
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
-    # 캐시 확인 (15초 내 동일 요청)
+    # 1) 스캐너가 이미 계산한 결과가 있으면 즉시 반환 (가장 빠름)
+    if scanner and scanner.latest_signals.get(timeframe):
+        for sig in scanner.latest_signals[timeframe]:
+            if sig.get("symbol") == symbol:
+                result = dict(sig)  # 복사
+                result = _enrich_signal_result(result, symbol, result.get("signal", ""), result.get("confidence", 0))
+                return result
+
+    # 2) 분석 캐시 확인 (15초 내 동일 요청)
     cache_key = f"{symbol}:{timeframe}"
     now = datetime.now(timezone.utc)
     cached = _analysis_cache.get(cache_key)
     if cached and (now - cached["ts"]).total_seconds() < ANALYSIS_CACHE_TTL:
         return cached["result"]
 
+    # 3) 캐시 미스 — 직접 분석 (폴백)
     try:
-        # 실시간 분석용 캔들 수 (500개 — 지표 계산에 충분)
         df = await candle_repo.get_candles(symbol, timeframe, limit=REALTIME_CANDLE_LIMIT)
 
         if len(df) < 20:
@@ -963,12 +989,10 @@ async def analyze_symbol(
         higher_tf_df = None
         if higher_tf != timeframe:
             try:
-                # 상위TF는 200개면 충분
                 higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=REALTIME_HIGHER_TF_LIMIT)
             except Exception as e:
                 logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
-        # 선물 데이터 (캐시 활용, TTL 60초)
         futures_data = await _get_futures_cached(symbol)
 
         signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
@@ -988,22 +1012,8 @@ async def analyze_symbol(
             except Exception:
                 pass
 
-        # 시그널 품질 점수 추가 (백테스트 승률 + BTC 베타)
-        quality = {}
-        if backtest_engine and signal.signal != "NEUTRAL":
-            wr = backtest_engine.get_signal_win_rate(signal.signal, signal.confidence)
-            if wr:
-                quality["signal_win_rate"] = wr.get("signal_win_rate")
-                quality["signal_total"] = wr.get("signal_total")
-                quality["confidence_win_rate"] = wr.get("confidence_win_rate")
-        if correlation_analyzer and symbol != "BTC/USDT":
-            beta = correlation_analyzer.get_beta(symbol)
-            if beta is not None:
-                quality["btc_beta"] = beta
-        if quality:
-            result["quality"] = quality
+        result = _enrich_signal_result(result, symbol, signal.signal, signal.confidence)
 
-        # 결과 캐싱
         _analysis_cache[cache_key] = {"result": result, "ts": now}
 
         return result
