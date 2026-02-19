@@ -160,7 +160,7 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
               const isNeutral = sig.signal === "NEUTRAL";
               return (
                 <tr
-                  key={sig.symbol}
+                  key={`${sig.symbol}-${sig.timeframe}-${idx}`}
                   onClick={() => onSelect(sig.symbol)}
                   className={`border-t border-card-active cursor-pointer transition-colors animate-stagger-in ${
                     selectedSymbol === sig.symbol

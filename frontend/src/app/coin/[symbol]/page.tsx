@@ -24,7 +24,7 @@ import { ArrowLeft, RefreshCw, TrendingUp, Clock, CheckCircle } from "lucide-rea
 
 export default function CoinDetailPage() {
   const params = useParams();
-  const symbol = params.symbol as string;
+  const symbol = (params.symbol as string) || "";
 
   const {
     signal,

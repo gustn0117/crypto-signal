@@ -72,6 +72,8 @@ class PredictionRepo:
         }
 
         resp = await self._table().insert(data).execute()
+        if not resp.data:
+            raise RuntimeError(f"예측 생성 실패: {symbol}/{timeframe}")
         return resp.data[0]["id"]
 
     async def get_active_prediction(self, symbol: str, timeframe: str) -> dict | None:

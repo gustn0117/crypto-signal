@@ -323,6 +323,9 @@ export async function updateAlertConfig(config: Partial<AlertConfig>): Promise<A
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
   });
+  if (!res.ok) {
+    throw new Error(`알림 설정 저장 실패: HTTP ${res.status}`);
+  }
   return res.json();
 }
 

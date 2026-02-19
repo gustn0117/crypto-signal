@@ -559,6 +559,10 @@ async def _verify_single_prediction(prediction: dict) -> dict:
     if df.empty:
         return prediction
 
+    if not entry_price or entry_price <= 0:
+        logger.warning("예측 검증 스킵 (entry_price 무효): %s #%d", symbol, prediction["id"])
+        return prediction
+
     pred_time = datetime.fromisoformat(prediction["created_at"])
     actual_candles = df[df.index >= pred_time]
 

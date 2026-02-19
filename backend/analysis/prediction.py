@@ -98,10 +98,10 @@ def generate_prediction(
     # ── 3. 캘리브레이션 ──
     cal_factor = 1.0
     if calibration and calibration.get("count", 0) >= 5:
-        avg_acc = calibration.get("avg_accuracy", 0.5)
-        cal_factor = 0.5 + avg_acc
+        avg_acc = min(max(calibration.get("avg_accuracy", 0.5), 0.0), 1.0)
+        cal_factor = max(0.5, min(0.5 + avg_acc, 1.5))
         drift *= cal_factor
-        step_vol *= (2.0 - cal_factor)
+        step_vol *= max(0.5, 2.0 - cal_factor)
 
     # ── 4. BTC 상관관계 보정 (알트코인만) ──
     if is_altcoin and btc_signal_direction:
@@ -138,7 +138,7 @@ def generate_prediction(
 
             # 시간 감쇠 드리프트
             progress = step / horizon_candles
-            time_decay = 1.0 - 0.3 * progress
+            time_decay = max(0.0, 1.0 - 0.3 * progress)
             step_drift = drift * time_decay
 
             price = price + step_drift + noise
