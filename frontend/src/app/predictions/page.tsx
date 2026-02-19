@@ -66,6 +66,7 @@ export default function PredictionsPage() {
     applyVerified,
     reload,
     expireOne,
+    expireAll,
   } = usePredictionsPage();
 
   const [tab, setTab] = useState<"active" | "history" | "analysis">("active");
@@ -122,13 +123,28 @@ export default function PredictionsPage() {
             </span>
           )}
         </div>
-        <button
-          onClick={reload}
-          className="p-2 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
-          title="새로고침"
-        >
-          <RefreshCw size={16} />
-        </button>
+        <div className="flex items-center gap-2">
+          {activePredictions.length > 0 && (
+            <button
+              onClick={() => {
+                if (confirm(`활성 예측 ${activePredictions.length}개를 모두 초기화하시겠습니까?`)) {
+                  expireAll();
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-card text-xs font-medium text-muted hover:text-danger hover:bg-danger/10 border border-border hover:border-danger/30 transition-colors"
+            >
+              <RotateCcw size={13} />
+              전체 초기화
+            </button>
+          )}
+          <button
+            onClick={reload}
+            className="p-2 rounded-card text-icon-muted hover:text-heading hover:bg-card-active transition-colors"
+            title="새로고침"
+          >
+            <RefreshCw size={16} />
+          </button>
+        </div>
       </div>
 
       {/* ─── 요약 통계 ──────────────────────────────────── */}

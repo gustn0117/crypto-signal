@@ -1447,6 +1447,12 @@ async def expire_prediction(prediction_id: int):
     return {"success": True, "prediction_id": prediction_id}
 
 
+@app.post("/api/predictions/expire-all")
+async def expire_all_predictions():
+    count = await prediction_repo.expire_all_predictions()
+    return {"success": True, "expired_count": count}
+
+
 # ─── 알림 API (DB 기반) ──────────────────────────────────
 
 @app.get("/api/alerts")

@@ -9,6 +9,7 @@ import {
   fetchAllActivePredictions,
   fetchPredictionDashboard,
   expirePrediction,
+  expireAllPredictions,
 } from "@/lib/api";
 
 export interface PredictionFilters {
@@ -41,6 +42,7 @@ interface UsePredictionsPageReturn {
   // Actions
   reload: () => void;
   expireOne: (predictionId: number) => Promise<void>;
+  expireAll: () => Promise<void>;
 }
 
 const PAGE_SIZE = 20;
@@ -186,6 +188,16 @@ export function usePredictionsPage(): UsePredictionsPageReturn {
     [loadDashboard]
   );
 
+  const expireAll = useCallback(async () => {
+    try {
+      await expireAllPredictions();
+      setActivePredictions([]);
+      loadDashboard();
+    } catch (e) {
+      console.error("전체 초기화 실패:", e);
+    }
+  }, [loadDashboard]);
+
   const reload = useCallback(() => {
     loadActive();
     loadHistory(filters, page);
@@ -210,5 +222,6 @@ export function usePredictionsPage(): UsePredictionsPageReturn {
     applyVerified,
     reload,
     expireOne,
+    expireAll,
   };
 }

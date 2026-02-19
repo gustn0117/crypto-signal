@@ -254,6 +254,16 @@ class PredictionRepo:
         )
         return bool(resp.data)
 
+    async def expire_all_predictions(self) -> int:
+        """모든 활성 예측을 만료 처리. 만료된 개수 반환."""
+        resp = await (
+            self._table()
+            .update({"status": "EXPIRED"})
+            .eq("status", "ACTIVE")
+            .execute()
+        )
+        return len(resp.data) if resp.data else 0
+
     async def get_global_prediction_stats(self) -> dict:
         """대시보드용 전체 예측 통계 (RPC 함수 사용)."""
         resp = await (

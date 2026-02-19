@@ -477,3 +477,15 @@ export async function expirePrediction(predictionId: number): Promise<{ success:
   return res.json();
 }
 
+export async function expireAllPredictions(): Promise<{ success: boolean; expired_count: number }> {
+  const res = await fetch(
+    `${API_BASE}/api/predictions/expire-all`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
