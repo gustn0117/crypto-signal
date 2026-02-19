@@ -3,6 +3,7 @@
 (12개 기술 지표 + 캔들 패턴 + 차트 패턴 + 거래량 + 선물 데이터 + 시장 맥락)
 """
 import logging
+import math
 import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -32,6 +33,19 @@ from .mtf import check_higher_tf, MTFConfirmation
 import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize(obj):
+    """NaN/Infinity를 JSON 안전 값으로 변환 (재귀)"""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 
 @dataclass
@@ -65,24 +79,26 @@ class TradeSignal:
     indicator_snapshot: Optional[dict] = None
 
     def to_dict(self) -> dict:
-        return {
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-            "signal": self.signal,
-            "confidence": round(self.confidence, 3),
-            "current_price": self.current_price,
-            "indicators": self.indicators,
-            "candle_patterns": self.candle_patterns,
-            "chart_patterns": self.chart_patterns,
-            "volume_signals": self.volume_signals,
-            "futures_signals": self.futures_signals,
-            "summary": self.summary,
-            "timestamp": self.timestamp,
-            "trade_params": self.trade_params,
-            "mtf_confirmation": self.mtf_confirmation,
-            "price_levels": self.price_levels,
-            "indicator_snapshot": self.indicator_snapshot,
-        }
+        return _sanitize(
+            {
+                "symbol": self.symbol,
+                "timeframe": self.timeframe,
+                "signal": self.signal,
+                "confidence": round(self.confidence, 3),
+                "current_price": self.current_price,
+                "indicators": self.indicators,
+                "candle_patterns": self.candle_patterns,
+                "chart_patterns": self.chart_patterns,
+                "volume_signals": self.volume_signals,
+                "futures_signals": self.futures_signals,
+                "summary": self.summary,
+                "timestamp": self.timestamp,
+                "trade_params": self.trade_params,
+                "mtf_confirmation": self.mtf_confirmation,
+                "price_levels": self.price_levels,
+                "indicator_snapshot": self.indicator_snapshot,
+            }
+        )
 
 
 class SignalEngine:
