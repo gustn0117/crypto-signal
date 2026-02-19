@@ -114,7 +114,7 @@ export default function CoinDetailPage() {
       />
 
       {/* 차트 + 종합 판단 */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* 캔들 차트 */}
         <div className="lg:col-span-8">
           <div className="flex items-center justify-between mb-3">
@@ -165,7 +165,7 @@ export default function CoinDetailPage() {
         </div>
 
         {/* 종합 판단 패널 */}
-        <div className="lg:col-span-4 space-y-4">
+        <div className="lg:col-span-4 space-y-4 lg:sticky lg:top-20">
           <div className={`p-5 rounded-card cd-card ${
             signal?.track?.state === "CONFIRMED"
               ? "!border-success/40"
@@ -224,65 +224,89 @@ export default function CoinDetailPage() {
             />
           )}
 
-          {/* 시그널 품질 카드 */}
-          {signal?.quality && (signal.quality.signal_win_rate != null || signal.quality.btc_beta != null) && (
-            <div className="cd-card">
-              <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
-                시그널 품질
-              </h3>
-              <div className="space-y-2.5">
-                {signal.quality.signal_win_rate != null && (
-                  <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
-                    <span className="text-xs text-muted">과거 유사 시그널 승률</span>
-                    <span className={`text-sm font-semibold ${
-                      signal.quality.signal_win_rate >= 0.6 ? "text-success" :
-                      signal.quality.signal_win_rate >= 0.4 ? "text-heading" : "text-danger"
-                    }`}>
-                      {(signal.quality.signal_win_rate * 100).toFixed(1)}%
-                      <span className="text-xs text-muted ml-1">({signal.quality.signal_total}건)</span>
-                    </span>
-                  </div>
-                )}
-                {signal.quality.confidence_win_rate != null && (
-                  <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
-                    <span className="text-xs text-muted">신뢰도 구간 승률</span>
-                    <span className={`text-sm font-semibold ${
-                      signal.quality.confidence_win_rate >= 0.6 ? "text-success" :
-                      signal.quality.confidence_win_rate >= 0.4 ? "text-heading" : "text-danger"
-                    }`}>
-                      {(signal.quality.confidence_win_rate * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                )}
-                {signal.quality.btc_beta != null && (
-                  <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
-                    <span className="text-xs text-muted">BTC 베타</span>
-                    <span className="text-sm font-semibold text-heading">
-                      {signal.quality.btc_beta.toFixed(2)}
-                    </span>
-                  </div>
-                )}
-              </div>
+        </div>
+      </div>
+
+      {/* 선물 + 품질 + 가격 정보 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        {/* 선물 데이터 */}
+        <div className="cd-card p-0 overflow-hidden">
+          <div className="cd-card-header flex items-center justify-between">
+            <span className="font-semibold text-heading">선물 데이터</span>
+          </div>
+          <div className="p-4 space-y-3">
+            {signal?.futures_signals && signal.futures_signals.length > 0 ? (
+              signal.futures_signals.map((f: any, i: number) => (
+                <FuturesItem key={i} name={f.name} signal={f.signal} strength={f.strength} value={f.value} description={f.description} />
+              ))
+            ) : (
+              <EmptyState text="데이터 없음" />
+            )}
+          </div>
+        </div>
+
+        {/* 시그널 품질 */}
+        <div className="cd-card">
+          <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
+            시그널 품질
+          </h3>
+          {signal?.quality && (signal.quality.signal_win_rate != null || signal.quality.btc_beta != null) ? (
+            <div className="space-y-2.5">
+              {signal.quality.signal_win_rate != null && (
+                <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
+                  <span className="text-xs text-muted">유사 시그널 승률</span>
+                  <span className={`text-sm font-semibold ${
+                    signal.quality.signal_win_rate >= 0.6 ? "text-success" :
+                    signal.quality.signal_win_rate >= 0.4 ? "text-heading" : "text-danger"
+                  }`}>
+                    {(signal.quality.signal_win_rate * 100).toFixed(1)}%
+                    <span className="text-xs text-muted ml-1">({signal.quality.signal_total}건)</span>
+                  </span>
+                </div>
+              )}
+              {signal.quality.confidence_win_rate != null && (
+                <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
+                  <span className="text-xs text-muted">신뢰도 구간 승률</span>
+                  <span className={`text-sm font-semibold ${
+                    signal.quality.confidence_win_rate >= 0.6 ? "text-success" :
+                    signal.quality.confidence_win_rate >= 0.4 ? "text-heading" : "text-danger"
+                  }`}>
+                    {(signal.quality.confidence_win_rate * 100).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+              {signal.quality.btc_beta != null && (
+                <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
+                  <span className="text-xs text-muted">BTC 베타</span>
+                  <span className="text-sm font-semibold text-heading">
+                    {signal.quality.btc_beta.toFixed(2)}
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-24 text-muted text-sm">
+              데이터 수집 중...
             </div>
           )}
+        </div>
 
-          {/* 가격 정보 카드 */}
-          <div className="cd-card">
-            <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
-              가격 정보
-            </h3>
-            <div className="grid grid-cols-2 gap-2.5">
-              <PriceStatItem label="현재가" value={`$${formatPrice(ticker?.price || 0)}`} />
-              <PriceStatItem
-                label="24h 변동"
-                value={`${(ticker?.change_24h || 0) >= 0 ? "+" : ""}${(ticker?.change_24h || 0).toFixed(2)}%`}
-                color={(ticker?.change_24h || 0) >= 0 ? "var(--success-text)" : "var(--danger)"}
-              />
-              <PriceStatItem label="매수호가" value={`$${formatPrice(ticker?.bid || 0)}`} />
-              <PriceStatItem label="매도호가" value={`$${formatPrice(ticker?.ask || 0)}`} />
-              <PriceStatItem label="24h 고가" value={`$${formatPrice(ticker?.high_24h || 0)}`} color="var(--success-text)" />
-              <PriceStatItem label="24h 저가" value={`$${formatPrice(ticker?.low_24h || 0)}`} color="var(--danger)" />
-            </div>
+        {/* 가격 정보 */}
+        <div className="cd-card">
+          <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
+            가격 정보
+          </h3>
+          <div className="grid grid-cols-2 gap-2.5">
+            <PriceStatItem label="현재가" value={`$${formatPrice(ticker?.price || 0)}`} />
+            <PriceStatItem
+              label="24h 변동"
+              value={`${(ticker?.change_24h || 0) >= 0 ? "+" : ""}${(ticker?.change_24h || 0).toFixed(2)}%`}
+              color={(ticker?.change_24h || 0) >= 0 ? "var(--success-text)" : "var(--danger)"}
+            />
+            <PriceStatItem label="매수호가" value={`$${formatPrice(ticker?.bid || 0)}`} />
+            <PriceStatItem label="매도호가" value={`$${formatPrice(ticker?.ask || 0)}`} />
+            <PriceStatItem label="24h 고가" value={`$${formatPrice(ticker?.high_24h || 0)}`} color="var(--success-text)" />
+            <PriceStatItem label="24h 저가" value={`$${formatPrice(ticker?.low_24h || 0)}`} color="var(--danger)" />
           </div>
         </div>
       </div>
@@ -355,6 +379,37 @@ function PatternCard({ name, signal, strength, description }: { name: string; si
       </div>
       <div className="h-1.5 bg-body rounded-full overflow-hidden mb-2">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${strength * 100}%`, backgroundColor: color }} />
+      </div>
+      <p className="text-xs text-body-text leading-relaxed">{description}</p>
+    </div>
+  );
+}
+
+function FuturesItem({ name, signal, strength, value, description }: { name: string; signal: string; strength: number; value: number; description: string }) {
+  const color = signal === "long" ? "var(--long)" : signal === "short" ? "var(--short)" : "var(--text-muted)";
+  const label = signal === "long" ? "LONG" : signal === "short" ? "SHORT" : "NEUTRAL";
+
+  return (
+    <div className="p-3 rounded-card bg-card-active border border-border">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-sm font-semibold text-heading">{name}</span>
+        <span
+          className="text-xs font-medium px-2 py-0.5 rounded-full"
+          style={{
+            color,
+            backgroundColor:
+              signal === "long" ? "rgba(38,218,210,0.12)" :
+              signal === "short" ? "rgba(239,83,80,0.12)" : "rgba(171,175,179,0.1)",
+          }}
+        >
+          {label}
+        </span>
+      </div>
+      <div className="h-1.5 bg-body rounded-full overflow-hidden mb-1.5">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${strength * 100}%`, backgroundColor: color }}
+        />
       </div>
       <p className="text-xs text-body-text leading-relaxed">{description}</p>
     </div>
