@@ -17,8 +17,9 @@ from data_collector import DataCollector
 from signal_tracker import SignalTracker
 from config import (
     MARKET_CACHE_TTL, SCAN_CONCURRENCY, ANALYSIS_CANDLE_LIMIT,
-    SCAN_SYMBOLS, DYNAMIC_SYMBOLS, SCAN_TOP_N,
+    SCAN_SYMBOLS, DYNAMIC_SYMBOLS, SCAN_TOP_N, SCALP_SYMBOLS_LIMIT,
 )
+from analysis.indicators import TF_CATEGORY
 
 logger = logging.getLogger(__name__)
 
@@ -121,13 +122,21 @@ class MarketScanner:
         마켓 스캔 (병렬 + DB 저장 + 점진적 확인 + 동적 심볼)
         """
         target_symbols = await self._get_scan_symbols()
+
+        # 스캘핑 TF는 코인 수 제한 (서버 부하 방지)
+        is_scalp = TF_CATEGORY.get(timeframe) == "scalp"
+        if is_scalp:
+            target_symbols = target_symbols[:SCALP_SYMBOLS_LIMIT]
+
+        candle_limit = 200 if is_scalp else ANALYSIS_CANDLE_LIMIT
+
         logger.info(f"마켓 스캔 시작 (타임프레임: {timeframe}, {len(target_symbols)}개 코인)")
         scan_id = uuid.uuid4().hex[:12]
 
         # 1) 캔들 병렬 수집
         await self.collector.collect_many(
             target_symbols, timeframe,
-            concurrency=SCAN_CONCURRENCY, limit=ANALYSIS_CANDLE_LIMIT
+            concurrency=SCAN_CONCURRENCY, limit=candle_limit
         )
 
         # 2) 병렬 분석
@@ -142,7 +151,7 @@ class MarketScanner:
                     df = self._get_cached_candle(symbol, timeframe)
                     if df is None:
                         df = await self.candle_repo.get_candles(
-                            symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT
+                            symbol, timeframe, limit=candle_limit
                         )
                         self._set_cached_candle(symbol, timeframe, df)
 

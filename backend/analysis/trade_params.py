@@ -8,8 +8,14 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 
 from .levels import PriceLevels
+from .indicators import TF_CATEGORY
 
 logger = logging.getLogger(__name__)
+
+# 타임프레임 카테고리별 ATR 배율
+SL_ATR_MULT = {"scalp": 1.0, "swing": 1.5, "position": 2.0}
+SL_MIN_ATR_FRAC = {"scalp": 0.3, "swing": 0.5, "position": 0.7}
+SL_FLOOR_ATR_FRAC = {"scalp": 0.2, "swing": 0.3, "position": 0.4}
 
 
 @dataclass
@@ -32,19 +38,11 @@ def calculate_trade_params(
     df: pd.DataFrame,
     signal_type: str,
     levels: PriceLevels,
+    timeframe: str = "1h",
 ) -> Optional[TradeParams]:
     """
-    시그널 타입과 가격 레벨을 기반으로 트레이드 파라미터 계산
-
-    LONG:
-      - Entry: 현재 종가
-      - SL: max(가까운 지지선 - 0.5*ATR, entry - 1.5*ATR) (단, entry - 0.5*ATR 이상 떨어져야 함)
-      - TP: entry + N * (entry - SL)
-
-    SHORT:
-      - Entry: 현재 종가
-      - SL: min(가까운 저항선 + 0.5*ATR, entry + 1.5*ATR)
-      - TP: entry - N * (SL - entry)
+    시그널 타입과 가격 레벨을 기반으로 트레이드 파라미터 계산.
+    타임프레임별 ATR 배율 적용 (스캘핑: 타이트, 포지션: 넓음).
     """
     if signal_type in ("NEUTRAL",):
         return None
@@ -56,28 +54,30 @@ def calculate_trade_params(
         if atr <= 0 or current_price <= 0:
             return None
 
+        # 타임프레임 카테고리별 ATR 배율
+        cat = TF_CATEGORY.get(timeframe, "swing")
+        sl_mult = SL_ATR_MULT[cat]
+        min_frac = SL_MIN_ATR_FRAC[cat]
+        floor_frac = SL_FLOOR_ATR_FRAC[cat]
+
         is_long = signal_type in ("STRONG_LONG", "LONG")
 
         if is_long:
-            # 지지선 기반 SL 계산
             support_based_sl = None
             if levels.support_levels:
-                nearest_support = levels.support_levels[0]  # 가장 가까운 지지선
-                support_based_sl = nearest_support - 0.5 * atr
+                nearest_support = levels.support_levels[0]
+                support_based_sl = nearest_support - min_frac * atr
 
-            # ATR 기반 SL (폴백)
-            atr_based_sl = current_price - 1.5 * atr
+            atr_based_sl = current_price - sl_mult * atr
+            min_sl = current_price - min_frac * atr
 
-            # 더 보수적인(가까운) SL 선택, 단 최소 0.5*ATR은 떨어져야 함
-            min_sl = current_price - 0.5 * atr
             if support_based_sl is not None and support_based_sl < min_sl:
                 stop_loss = max(support_based_sl, atr_based_sl)
             else:
                 stop_loss = atr_based_sl
 
-            # SL이 현재가와 너무 가까우면 1*ATR로 강제
-            if current_price - stop_loss < 0.3 * atr:
-                stop_loss = current_price - atr
+            if current_price - stop_loss < floor_frac * atr:
+                stop_loss = current_price - atr * (sl_mult * 0.67)
 
             risk = current_price - stop_loss
             entry_price = current_price
@@ -87,22 +87,21 @@ def calculate_trade_params(
             tp3 = entry_price + risk * 3.0
 
         else:  # SHORT
-            # 저항선 기반 SL 계산
             resistance_based_sl = None
             if levels.resistance_levels:
                 nearest_resistance = levels.resistance_levels[0]
-                resistance_based_sl = nearest_resistance + 0.5 * atr
+                resistance_based_sl = nearest_resistance + min_frac * atr
 
-            atr_based_sl = current_price + 1.5 * atr
-            max_sl = current_price + 0.5 * atr
+            atr_based_sl = current_price + sl_mult * atr
+            max_sl = current_price + min_frac * atr
 
             if resistance_based_sl is not None and resistance_based_sl > max_sl:
                 stop_loss = min(resistance_based_sl, atr_based_sl)
             else:
                 stop_loss = atr_based_sl
 
-            if stop_loss - current_price < 0.3 * atr:
-                stop_loss = current_price + atr
+            if stop_loss - current_price < floor_frac * atr:
+                stop_loss = current_price + atr * (sl_mult * 0.67)
 
             risk = stop_loss - current_price
             entry_price = current_price
@@ -112,7 +111,6 @@ def calculate_trade_params(
             tp3 = entry_price - risk * 3.0
 
         risk_percent = (risk / entry_price) * 100 if entry_price > 0 else 0
-        # 기본 R:R은 2:1 (TP2 기준)
         rr_ratio = 2.0
 
         return TradeParams(

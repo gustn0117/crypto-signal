@@ -34,8 +34,11 @@ SCAN_SYMBOLS = [
     "LINK/USDT",
 ]
 
-# 멀티 타임프레임 스캔 설정
-SCAN_TIMEFRAMES = ["15m", "1h", "4h"]
+# 멀티 타임프레임 스캔 설정 (1m/5m 스캘핑 포함)
+SCAN_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
+
+# 스캘핑 설정
+SCALP_SYMBOLS_LIMIT = int(os.getenv("SCALP_SYMBOLS_LIMIT", "10"))  # 1m/5m은 상위 N개만 스캔
 
 # Supabase (PostgreSQL)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://api.hsweb.pics")
@@ -82,7 +85,8 @@ REALTIME_HIGHER_TF_LIMIT = int(os.getenv("REALTIME_HIGHER_TF_LIMIT", "200"))
 
 # 히스토리 백필 설정 (대용량 스토리지 활용)
 BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "1825"))  # 5년치
-BACKFILL_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d"]  # 5m 추가
+BACKFILL_DAYS_1M = int(os.getenv("BACKFILL_DAYS_1M", "7"))  # 1m은 7일치만
+BACKFILL_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 BACKFILL_BATCH_SIZE = 1000  # 바이낸스 API 1회 최대 캔들 수
 BACKFILL_CONCURRENCY = 5  # 동시 심볼 수 (넉넉한 트래픽 활용)
 
@@ -91,3 +95,13 @@ ALERT_ENABLED = os.getenv("ALERT_ENABLED", "true").lower() == "true"
 ALERT_MIN_CONFIDENCE = float(os.getenv("ALERT_MIN_CONFIDENCE", "0.5"))
 ALERT_SIGNAL_TYPES = os.getenv("ALERT_SIGNAL_TYPES", "STRONG_LONG,STRONG_SHORT,LONG,SHORT").split(",")
 ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "30"))
+
+# 타임프레임별 알림 쿨다운 (분)
+ALERT_COOLDOWN_MAP = {
+    "1m": 3, "5m": 5, "15m": 15, "1h": 30, "4h": 60, "1d": 120,
+}
+
+# 타임프레임별 예측 기본 호라이즌 (캔들 수)
+DEFAULT_HORIZON_CANDLES = {
+    "1m": 60, "5m": 36, "15m": 24, "30m": 24, "1h": 24, "4h": 12, "1d": 7,
+}

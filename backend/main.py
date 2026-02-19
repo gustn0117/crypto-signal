@@ -53,9 +53,10 @@ from config import (
     HOST, PORT, SCAN_INTERVAL_SECONDS, TIMEFRAMES, DEFAULT_TIMEFRAME,
     ALLOWED_ORIGINS, LOG_LEVEL, LOG_DIR, HIGHER_TF_MAP,
     ALERT_ENABLED, ALERT_MIN_CONFIDENCE, ALERT_SIGNAL_TYPES, ALERT_COOLDOWN_MINUTES,
+    ALERT_COOLDOWN_MAP, DEFAULT_HORIZON_CANDLES,
     ANALYSIS_CANDLE_LIMIT, REALTIME_CANDLE_LIMIT, REALTIME_HIGHER_TF_LIMIT,
-    SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES,
-    BACKFILL_DAYS, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
+    SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES, SCALP_SYMBOLS_LIMIT,
+    BACKFILL_DAYS, BACKFILL_DAYS_1M, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
 )
 from exchange import AsyncBinanceClient
 from scanner import MarketScanner
@@ -185,10 +186,12 @@ async def _push_transition_alert(transition: dict):
     direction = transition.get("direction", "")
     symbol = transition.get("symbol", "")
 
-    # 쿨다운 체크 (DB 기반)
+    # 쿨다운 체크 (DB 기반, 타임프레임별)
     cooldown_key = f"track_{transition.get('track_id', '')}"
+    tf = transition.get("timeframe", "1h")
+    cooldown_min = ALERT_COOLDOWN_MAP.get(tf, _alert_cooldown_minutes)
     if alert_repo:
-        is_cooling = await alert_repo.check_cooldown(cooldown_key, _alert_cooldown_minutes)
+        is_cooling = await alert_repo.check_cooldown(cooldown_key, cooldown_min)
         if is_cooling:
             return
 
@@ -321,6 +324,8 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
     if len(df) >= 100:
         hist_returns = df["close"].pct_change().dropna().values
 
+    horizon = DEFAULT_HORIZON_CANDLES.get(timeframe, 24)
+
     prediction_data = generate_prediction(
         signal_direction=signal.signal,
         confidence=signal.confidence,
@@ -328,7 +333,7 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         trade_params=signal.trade_params,
         price_levels=signal.price_levels,
         timeframe=timeframe,
-        horizon_candles=24,
+        horizon_candles=horizon,
         indicator_snapshot=signal.indicator_snapshot,
         regime=regime_result.regime,
         calibration=cal,
@@ -354,7 +359,7 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         predicted_path=prediction_data["predicted_path"],
         upper_bound_path=prediction_data["upper_bound_path"],
         lower_bound_path=prediction_data["lower_bound_path"],
-        horizon_candles=24,
+        horizon_candles=horizon,
         auto_generated=True,
         regime=regime_result.regime,
         calibration_factor=cal["avg_accuracy"] if cal else 1.0,
@@ -758,17 +763,32 @@ async def run_correlation_update():
 
 
 async def run_backfill():
-    """히스토리 백필"""
+    """히스토리 백필 (1m은 7일, 나머지는 5년)"""
     try:
         collector = DataCollector(async_client, candle_repo)
+
+        # 1m 제외 타임프레임: 5년치 백필
+        tf_without_1m = [tf for tf in BACKFILL_TIMEFRAMES if tf != "1m"]
         results = await collector.backfill_all(
             symbols=SCAN_SYMBOLS,
-            timeframes=BACKFILL_TIMEFRAMES,
+            timeframes=tf_without_1m,
             days=BACKFILL_DAYS,
             batch_size=BACKFILL_BATCH_SIZE,
             concurrency=BACKFILL_CONCURRENCY,
         )
         total = sum(c for sym in results.values() for c in sym.values())
+
+        # 1m: 7일치만, 코어 심볼 + 스캘핑 대상만
+        if "1m" in BACKFILL_TIMEFRAMES:
+            results_1m = await collector.backfill_all(
+                symbols=SCAN_SYMBOLS[:SCALP_SYMBOLS_LIMIT],
+                timeframes=["1m"],
+                days=BACKFILL_DAYS_1M,
+                batch_size=BACKFILL_BATCH_SIZE,
+                concurrency=BACKFILL_CONCURRENCY,
+            )
+            total += sum(c for sym in results_1m.values() for c in sym.values())
+
         if total > 0:
             logger.info("백필 완료: 총 %d개 캔들 저장", total)
         else:
@@ -806,7 +826,7 @@ async def lifespan(app: FastAPI):
 
     # 멀티 타임프레임 스케줄링
     # 15m: 30초마다, 1h: 60초마다, 4h: 5분마다
-    tf_intervals = {"15m": 30, "1h": 60, "4h": 300}
+    tf_intervals = {"1m": 15, "5m": 20, "15m": 30, "1h": 60, "4h": 300}
     for tf in SCAN_TIMEFRAMES:
         interval = tf_intervals.get(tf, SCAN_INTERVAL_SECONDS)
         scheduler.add_job(
@@ -1224,7 +1244,7 @@ async def create_prediction(
             body = await request.json()
         except Exception:
             pass
-        horizon = body.get("horizon_candles", 24)
+        horizon = body.get("horizon_candles", DEFAULT_HORIZON_CANDLES.get(timeframe, 24))
 
         regime_result = detect_regime(df)
 

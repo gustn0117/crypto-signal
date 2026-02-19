@@ -156,20 +156,20 @@ class SignalEngine:
         """종합 분석 수행 후 TradeSignal 반환"""
         current_price = df["close"].iloc[-1]
 
-        # 1) 기술적 지표 분석 (12개)
+        # 1) 기술적 지표 분석 (12개 — 타임프레임별 파라미터 적용)
         indicator_results: List[IndicatorResult] = [
-            analyze_rsi(df),
-            analyze_macd(df),
-            analyze_bollinger_bands(df),
-            analyze_ema_cross(df),
-            analyze_stochastic(df),
-            analyze_adx(df),
+            analyze_rsi(df, timeframe=timeframe),
+            analyze_macd(df, timeframe=timeframe),
+            analyze_bollinger_bands(df, timeframe=timeframe),
+            analyze_ema_cross(df, timeframe=timeframe),
+            analyze_stochastic(df, timeframe=timeframe),
+            analyze_adx(df, timeframe=timeframe),
             analyze_vwap(df),
             analyze_ichimoku(df),
-            analyze_williams_r(df),
-            analyze_cci(df),
-            analyze_mfi(df),
-            analyze_cmf(df),
+            analyze_williams_r(df, timeframe=timeframe),
+            analyze_cci(df, timeframe=timeframe),
+            analyze_mfi(df, timeframe=timeframe),
+            analyze_cmf(df, timeframe=timeframe),
         ]
 
         # 2) 캔들 패턴 분석
@@ -233,10 +233,10 @@ class SignalEngine:
         # 12) 트레이드 파라미터 계산
         trade_params_result: Optional[TradeParams] = None
         if signal != "NEUTRAL":
-            trade_params_result = calculate_trade_params(df, signal, levels)
+            trade_params_result = calculate_trade_params(df, signal, levels, timeframe=timeframe)
 
         # 13) 지표 스냅샷 생성
-        indicator_snapshot = self._build_indicator_snapshot(df)
+        indicator_snapshot = self._build_indicator_snapshot(df, timeframe)
 
         # 14) 요약 생성
         summary = self._generate_summary(
@@ -317,8 +317,11 @@ class SignalEngine:
 
         return max(0.0, min(1.0, confidence + modifier))
 
-    def _build_indicator_snapshot(self, df: pd.DataFrame) -> dict:
+    def _build_indicator_snapshot(self, df: pd.DataFrame, timeframe: str = "1h") -> dict:
         """예측 엔진에 전달할 지표 스냅샷 생성."""
+        from .indicators import get_params
+        p = get_params(timeframe)
+
         snapshot: dict = {}
         close = df["close"]
         high = df["high"]
@@ -326,11 +329,11 @@ class SignalEngine:
         volume = df["volume"]
 
         try:
-            rsi = ta.rsi(close, length=14)
+            rsi = ta.rsi(close, length=p["rsi_period"])
             if rsi is not None and not rsi.empty:
                 snapshot["rsi"] = round(float(rsi.dropna().iloc[-1]), 2)
 
-            macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+            macd_df = ta.macd(close, fast=p["macd_fast"], slow=p["macd_slow"], signal=p["macd_signal"])
             if macd_df is not None and not macd_df.empty:
                 hist_col = [c for c in macd_df.columns if "MACDh" in c or "Histogram" in c.replace("_", "")]
                 if not hist_col:
@@ -341,7 +344,7 @@ class SignalEngine:
                         slope = (float(hist.iloc[-1]) - float(hist.iloc[-3])) / 2
                         snapshot["macd_hist_slope"] = round(slope, 6)
 
-            bbands = ta.bbands(close, length=20, std=2.0)
+            bbands = ta.bbands(close, length=p["bb_period"], std=p["bb_std"])
             if bbands is not None and not bbands.empty:
                 upper_col = [c for c in bbands.columns if "BBU" in c]
                 lower_col = [c for c in bbands.columns if "BBL" in c]

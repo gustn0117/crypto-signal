@@ -10,6 +10,43 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# ─── 타임프레임별 지표 파라미터 ─────────────────────────────
+TF_CATEGORY = {
+    "1m": "scalp", "5m": "scalp",
+    "15m": "swing", "30m": "swing", "1h": "swing",
+    "4h": "position", "1d": "position",
+}
+
+INDICATOR_PARAMS = {
+    "scalp": {
+        "rsi_period": 9, "macd_fast": 8, "macd_slow": 17, "macd_signal": 9,
+        "bb_period": 15, "bb_std": 2.0, "ema_short": 5, "ema_long": 13,
+        "stoch_k": 9, "stoch_d": 3, "stoch_smooth": 3,
+        "adx_period": 10, "williams_period": 10, "cci_period": 14,
+        "mfi_period": 10, "cmf_period": 14,
+    },
+    "swing": {
+        "rsi_period": 14, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
+        "bb_period": 20, "bb_std": 2.0, "ema_short": 9, "ema_long": 21,
+        "stoch_k": 14, "stoch_d": 3, "stoch_smooth": 3,
+        "adx_period": 14, "williams_period": 14, "cci_period": 20,
+        "mfi_period": 14, "cmf_period": 20,
+    },
+    "position": {
+        "rsi_period": 21, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
+        "bb_period": 20, "bb_std": 2.0, "ema_short": 12, "ema_long": 26,
+        "stoch_k": 14, "stoch_d": 3, "stoch_smooth": 3,
+        "adx_period": 14, "williams_period": 14, "cci_period": 20,
+        "mfi_period": 14, "cmf_period": 20,
+    },
+}
+
+
+def get_params(timeframe: str = "1h") -> dict:
+    """타임프레임에 맞는 지표 파라미터 반환."""
+    category = TF_CATEGORY.get(timeframe, "swing")
+    return INDICATOR_PARAMS[category]
+
 
 @dataclass
 class IndicatorResult:
@@ -21,9 +58,11 @@ class IndicatorResult:
     description: str
 
 
-def analyze_rsi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+def analyze_rsi(df: pd.DataFrame, period: int = 14, timeframe: str = "1h") -> IndicatorResult:
     """RSI (Relative Strength Index) 분석"""
     try:
+        p = get_params(timeframe)
+        period = p["rsi_period"]
         rsi = ta.rsi(df["close"], length=period)
         if rsi is None or rsi.empty:
             return IndicatorResult("RSI", "neutral", 0.0, 0.0, "데이터 부족")
@@ -49,10 +88,11 @@ def analyze_rsi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
         return IndicatorResult("RSI", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
+def analyze_macd(df: pd.DataFrame, timeframe: str = "1h") -> IndicatorResult:
     """MACD 분석 (크로스오버 + 히스토그램)"""
     try:
-        macd_df = ta.macd(df["close"], fast=12, slow=26, signal=9)
+        p = get_params(timeframe)
+        macd_df = ta.macd(df["close"], fast=p["macd_fast"], slow=p["macd_slow"], signal=p["macd_signal"])
         if macd_df is None or macd_df.empty:
             return IndicatorResult("MACD", "neutral", 0.0, 0.0, "데이터 부족")
 
@@ -96,9 +136,12 @@ def analyze_macd(df: pd.DataFrame) -> IndicatorResult:
         return IndicatorResult("MACD", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0) -> IndicatorResult:
+def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0, timeframe: str = "1h") -> IndicatorResult:
     """볼린저밴드 분석"""
     try:
+        p = get_params(timeframe)
+        period = p["bb_period"]
+        std = p["bb_std"]
         bbands = ta.bbands(df["close"], length=period, std=std)
         if bbands is None or bbands.empty:
             return IndicatorResult("BB", "neutral", 0.0, 0.0, "데이터 부족")
@@ -140,9 +183,12 @@ def analyze_bollinger_bands(df: pd.DataFrame, period: int = 20, std: float = 2.0
         return IndicatorResult("BB", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int = 21) -> IndicatorResult:
+def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int = 21, timeframe: str = "1h") -> IndicatorResult:
     """EMA 크로스 분석"""
     try:
+        p = get_params(timeframe)
+        short_period = p["ema_short"]
+        long_period = p["ema_long"]
         ema_short = ta.ema(df["close"], length=short_period)
         ema_long = ta.ema(df["close"], length=long_period)
 
@@ -180,10 +226,11 @@ def analyze_ema_cross(df: pd.DataFrame, short_period: int = 9, long_period: int 
         return IndicatorResult("EMA", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_stochastic(df: pd.DataFrame) -> IndicatorResult:
+def analyze_stochastic(df: pd.DataFrame, timeframe: str = "1h") -> IndicatorResult:
     """스토캐스틱 분석"""
     try:
-        stoch = ta.stoch(df["high"], df["low"], df["close"])
+        p = get_params(timeframe)
+        stoch = ta.stoch(df["high"], df["low"], df["close"], k=p["stoch_k"], d=p["stoch_d"], smooth_k=p["stoch_smooth"])
         if stoch is None or stoch.empty:
             return IndicatorResult("STOCH", "neutral", 0.0, 0.0, "데이터 부족")
 
@@ -212,9 +259,11 @@ def analyze_stochastic(df: pd.DataFrame) -> IndicatorResult:
 # ─── 새 지표 7개 ──────────────────────────────────────────
 
 
-def analyze_adx(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+def analyze_adx(df: pd.DataFrame, period: int = 14, timeframe: str = "1h") -> IndicatorResult:
     """ADX (Average Directional Index) — 추세 강도"""
     try:
+        p = get_params(timeframe)
+        period = p["adx_period"]
         adx_df = ta.adx(df["high"], df["low"], df["close"], length=period)
         if adx_df is None or adx_df.empty:
             return IndicatorResult("ADX", "neutral", 0.0, 0.0, "데이터 부족")
@@ -326,9 +375,11 @@ def analyze_ichimoku(df: pd.DataFrame) -> IndicatorResult:
         return IndicatorResult("Ichimoku", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_williams_r(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+def analyze_williams_r(df: pd.DataFrame, period: int = 14, timeframe: str = "1h") -> IndicatorResult:
     """Williams %R — 과매수/과매도 오실레이터"""
     try:
+        p = get_params(timeframe)
+        period = p["williams_period"]
         willr = ta.willr(df["high"], df["low"], df["close"], length=period)
         if willr is None or willr.empty:
             return IndicatorResult("W%R", "neutral", 0.0, 0.0, "데이터 부족")
@@ -351,9 +402,11 @@ def analyze_williams_r(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
         return IndicatorResult("W%R", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_cci(df: pd.DataFrame, period: int = 20) -> IndicatorResult:
+def analyze_cci(df: pd.DataFrame, period: int = 20, timeframe: str = "1h") -> IndicatorResult:
     """CCI (Commodity Channel Index) — 가격 이탈 감지"""
     try:
+        p = get_params(timeframe)
+        period = p["cci_period"]
         cci = ta.cci(df["high"], df["low"], df["close"], length=period)
         if cci is None or cci.empty:
             return IndicatorResult("CCI", "neutral", 0.0, 0.0, "데이터 부족")
@@ -380,9 +433,11 @@ def analyze_cci(df: pd.DataFrame, period: int = 20) -> IndicatorResult:
         return IndicatorResult("CCI", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_mfi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
+def analyze_mfi(df: pd.DataFrame, period: int = 14, timeframe: str = "1h") -> IndicatorResult:
     """MFI (Money Flow Index) — 거래량 가중 RSI"""
     try:
+        p = get_params(timeframe)
+        period = p["mfi_period"]
         mfi = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=period)
         if mfi is None or mfi.empty:
             return IndicatorResult("MFI", "neutral", 0.0, 0.0, "데이터 부족")
@@ -405,9 +460,11 @@ def analyze_mfi(df: pd.DataFrame, period: int = 14) -> IndicatorResult:
         return IndicatorResult("MFI", "neutral", 0.0, 0.0, "분석 오류")
 
 
-def analyze_cmf(df: pd.DataFrame, period: int = 20) -> IndicatorResult:
+def analyze_cmf(df: pd.DataFrame, period: int = 20, timeframe: str = "1h") -> IndicatorResult:
     """CMF (Chaikin Money Flow) — 자금 유입/유출 방향"""
     try:
+        p = get_params(timeframe)
+        period = p["cmf_period"]
         cmf = ta.cmf(df["high"], df["low"], df["close"], df["volume"], length=period)
         if cmf is None or cmf.empty:
             return IndicatorResult("CMF", "neutral", 0.0, 0.0, "데이터 부족")
