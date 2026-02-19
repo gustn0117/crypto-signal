@@ -19,6 +19,7 @@ import {
   RefreshCw,
   BarChart3,
   Activity,
+  RotateCcw,
 } from "lucide-react";
 
 // ─── 결과 컬러/아이콘 (PredictionDashboardWidget 패턴) ────
@@ -64,6 +65,7 @@ export default function PredictionsPage() {
     applyCreated,
     applyVerified,
     reload,
+    expireOne,
   } = usePredictionsPage();
 
   const [tab, setTab] = useState<"active" | "history" | "analysis">("active");
@@ -163,7 +165,7 @@ export default function PredictionsPage() {
 
       {/* ─── 활성 예측 탭 ────────────────────────────────── */}
       {tab === "active" && (
-        <ActiveTab predictions={activePredictions} loading={activeLoading} />
+        <ActiveTab predictions={activePredictions} loading={activeLoading} onExpire={expireOne} />
       )}
 
       {/* ─── 히스토리 탭 ─────────────────────────────────── */}
@@ -226,7 +228,7 @@ function StatsBar({ stats }: { stats: PredictionDashboardStats }) {
 // 활성 예측 탭
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function ActiveTab({ predictions, loading }: { predictions: Prediction[]; loading: boolean }) {
+function ActiveTab({ predictions, loading, onExpire }: { predictions: Prediction[]; loading: boolean; onExpire: (id: number) => void }) {
   if (loading) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -250,13 +252,13 @@ function ActiveTab({ predictions, loading }: { predictions: Prediction[]; loadin
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
       {predictions.map((p) => (
-        <ActivePredictionCard key={p.id} prediction={p} />
+        <ActivePredictionCard key={p.id} prediction={p} onExpire={onExpire} />
       ))}
     </div>
   );
 }
 
-function ActivePredictionCard({ prediction }: { prediction: Prediction }) {
+function ActivePredictionCard({ prediction, onExpire }: { prediction: Prediction; onExpire: (id: number) => void }) {
   const isLong = prediction.signal_direction.includes("LONG");
   const pnl = prediction.progress_pnl_pct;
   const rr = prediction.progress_rr_current;
@@ -277,13 +279,24 @@ function ActivePredictionCard({ prediction }: { prediction: Prediction }) {
       href={`/coin/${prediction.symbol.replace("/", "")}`}
       className="cd-card p-0 overflow-hidden hover:border-primary/30 transition-colors block"
     >
-      {/* 헤더: 심볼 + 방향 + 신뢰도 */}
+      {/* 헤더: 심볼 + 방향 + 초기화 + 신뢰도 */}
       <div className="px-4 py-3 bg-card border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-heading">{symbolShort}</span>
           <span className="text-xs text-muted">{prediction.timeframe}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onExpire(prediction.id);
+            }}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+            title="예측 초기화"
+          >
+            <RotateCcw size={11} />
+          </button>
           {isLong ? (
             <TrendingUp size={14} className="text-success" />
           ) : (
