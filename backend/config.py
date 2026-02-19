@@ -109,3 +109,20 @@ ALERT_COOLDOWN_MAP = {
 DEFAULT_HORIZON_CANDLES = {
     "1m": 60, "5m": 36, "15m": 24, "30m": 24, "1h": 24, "4h": 12, "1d": 7,
 }
+
+# ─── Telegram/Discord 알림 ──────────────────────────────
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+# ─── 감성 분석 ──────────────────────────────────────────
+CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
+
+# ─── 자동매매 ────────────────────────────────────────────
+AUTO_TRADE_ENABLED = os.getenv("AUTO_TRADE_ENABLED", "false").lower() == "true"
+AUTO_TRADE_MAX_POSITIONS = int(os.getenv("AUTO_TRADE_MAX_POSITIONS", "3"))
+AUTO_TRADE_MAX_PCT = float(os.getenv("AUTO_TRADE_MAX_PCT", "10.0"))
+
+# ─── Bybit 멀티 거래소 ──────────────────────────────────
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
+BYBIT_SECRET = os.getenv("BYBIT_SECRET", "")

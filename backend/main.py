@@ -57,6 +57,8 @@ from config import (
     ANALYSIS_CANDLE_LIMIT, REALTIME_CANDLE_LIMIT, REALTIME_HIGHER_TF_LIMIT,
     SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES, SCALP_SYMBOLS_LIMIT,
     BACKFILL_DAYS, BACKFILL_DAYS_1M, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DISCORD_WEBHOOK_URL, CRYPTOPANIC_API_KEY,
+    AUTO_TRADE_ENABLED, AUTO_TRADE_MAX_POSITIONS, AUTO_TRADE_MAX_PCT,
 )
 from exchange import AsyncBinanceClient
 from scanner import MarketScanner
@@ -72,6 +74,9 @@ from analysis.self_learning import SelfLearningEngine
 from analysis.backtest import BacktestEngine
 from analysis.correlation import CorrelationAnalyzer
 from analysis.indicator_series import compute_indicator_series
+from analysis.portfolio_risk import PortfolioRiskManager
+from notifier import notify_alert
+from trade_executor import TradeExecutor
 
 # 로깅 초기화
 setup_logging(log_dir=LOG_DIR, level=LOG_LEVEL)
@@ -92,6 +97,8 @@ learning_engine: SelfLearningEngine | None = None
 backtest_engine: BacktestEngine | None = None
 correlation_analyzer: CorrelationAnalyzer | None = None
 paper_trading_repo: PaperTradingRepo | None = None
+risk_manager: PortfolioRiskManager | None = None
+trade_executor: TradeExecutor | None = None
 
 # WebSocket 연결 관리
 connected_clients: List[WebSocket] = []
@@ -229,6 +236,12 @@ async def _push_transition_alert(transition: dict):
             alert["id"] = alert_id
 
     await _broadcast_ws(_safe_dumps({"type": "alert", "data": alert}))
+
+    # Telegram/Discord 알림
+    try:
+        await notify_alert(alert)
+    except Exception as e:
+        logger.debug("외부 알림 전송 실패: %s", e)
 
 
 async def push_subscription_updates():
@@ -382,6 +395,45 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         }))
 
 
+async def _execute_auto_trade(symbol: str, timeframe: str):
+    """CONFIRMED 시그널에 대한 자동매매 실행."""
+    if not trade_executor or not paper_trading_repo:
+        return
+    # 최신 시그널에서 트레이드 파라미터 추출
+    sig = None
+    for s in (scanner.latest_signals.get(timeframe) or []):
+        if s.get("symbol") == symbol:
+            sig = s
+            break
+    if not sig or not sig.get("trade_params"):
+        return
+
+    account = await paper_trading_repo.get_or_create_account()
+    open_trades = await paper_trading_repo.get_all_open_positions()
+    equity = account.get("balance", 10000) + sum(
+        t.get("unrealized_pnl", 0) for t in open_trades
+    )
+
+    result = await trade_executor.execute_signal(
+        symbol=symbol,
+        signal=sig["signal"],
+        confidence=sig["confidence"],
+        trade_params=sig["trade_params"],
+        equity=equity,
+        open_positions=[
+            {"symbol": t["symbol"], "status": t["status"], "position_usdt": t.get("position_usdt", 0)}
+            for t in open_trades
+        ],
+    )
+    if result and result.success:
+        logger.info("[자동매매] %s %s 체결 완료 (order_id=%s)", result.side, symbol, result.order_id)
+        if connected_clients:
+            await _broadcast_ws(_safe_dumps({
+                "type": "auto_trade_executed",
+                "data": result.to_dict(),
+            }))
+
+
 async def scheduled_scan_tf(timeframe: str):
     """특정 타임프레임 스캔"""
     global _market_context
@@ -402,6 +454,7 @@ async def scheduled_scan_tf(timeframe: str):
                 latest_signals=signals_1h,
                 btc_ticker={"change_24h": btc_ticker.get("percentage", 0)} if btc_ticker else None,
                 all_tickers=all_tickers,
+                sentiment_api_key=CRYPTOPANIC_API_KEY,
             )
             async with _market_context_lock:
                 _market_context = ctx
@@ -409,7 +462,7 @@ async def scheduled_scan_tf(timeframe: str):
         except Exception as e:
             logger.warning("시장 맥락 갱신 실패: %s", e)
 
-    # 트랜지션 알림 + 자동 예측
+    # 트랜지션 알림 + 자동 예측 + 자동매매
     for tr in (scanner.latest_transitions or []):
         try:
             if tr["to_state"] == "CONFIRMED":
@@ -419,6 +472,12 @@ async def scheduled_scan_tf(timeframe: str):
                         await _auto_generate_prediction(tr["symbol"], timeframe)
                     except Exception as e:
                         logger.error("자동 예측 생성 실패 [%s]: %s", tr["symbol"], e)
+                    # 자동매매 실행
+                    if trade_executor and trade_executor.enabled:
+                        try:
+                            await _execute_auto_trade(tr["symbol"], timeframe)
+                        except Exception as e:
+                            logger.error("자동매매 실패 [%s]: %s", tr["symbol"], e)
             elif tr["to_state"] == "WEAKENING" and tr.get("from_state") == "CONFIRMED":
                 await _push_transition_alert(tr)
         except Exception as e:
@@ -935,7 +994,7 @@ async def update_paper_positions():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer, paper_trading_repo
+    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer, paper_trading_repo, risk_manager, trade_executor
 
     # DB 초기화
     await database.connect()
@@ -951,6 +1010,15 @@ async def lifespan(app: FastAPI):
 
     # 스캐너 생성 (티커 캐시 연동으로 거래량 급증 감지)
     correlation_analyzer = CorrelationAnalyzer(candle_repo)
+    risk_manager = PortfolioRiskManager(correlation_analyzer)
+    trade_executor = TradeExecutor(
+        exchange_client=async_client,
+        paper_repo=paper_trading_repo,
+        risk_manager=risk_manager,
+        enabled=AUTO_TRADE_ENABLED,
+        max_positions=AUTO_TRADE_MAX_POSITIONS,
+        max_position_pct=AUTO_TRADE_MAX_PCT,
+    )
     scanner = MarketScanner(async_client, candle_repo, signal_repo, track_repo,
                             ticker_cache_getter=lambda: _ticker_cache,
                             correlation_analyzer=correlation_analyzer)
@@ -1414,6 +1482,50 @@ async def get_symbol_beta(symbol: str):
         return {"symbol": symbol, "beta": None}
     beta = correlation_analyzer.get_beta(symbol)
     return {"symbol": symbol, "beta": beta}
+
+
+# ─── 포트폴리오 리스크 API ─────────────────────────────
+
+@app.get("/api/portfolio/risk")
+async def get_portfolio_risk():
+    """현재 포트폴리오 리스크 평가"""
+    if not risk_manager or not paper_trading_repo:
+        return {"error": "리스크 매니저 미초기화"}
+    account = await paper_trading_repo.get_or_create_account()
+    positions = await paper_trading_repo.get_all_open_positions()
+    equity = account.get("balance", 10000) + sum(
+        t.get("unrealized_pnl", 0) for t in positions
+    )
+    report = risk_manager.assess_risk(
+        [{"symbol": p["symbol"], "position_usdt": p.get("position_usdt", 0)} for p in positions],
+        equity,
+    )
+    return report.to_dict()
+
+
+@app.get("/api/auto-trade/config")
+async def get_auto_trade_config():
+    """자동매매 설정 조회"""
+    return {
+        "enabled": trade_executor.enabled if trade_executor else False,
+        "max_positions": trade_executor.max_positions if trade_executor else 3,
+        "max_position_pct": trade_executor.max_position_pct if trade_executor else 10.0,
+    }
+
+
+@app.post("/api/auto-trade/config")
+async def update_auto_trade_config(request: Request):
+    """자동매매 설정 변경"""
+    if not trade_executor:
+        raise HTTPException(status_code=500, detail="자동매매 미초기화")
+    body = await request.json()
+    if "enabled" in body:
+        trade_executor.enabled = bool(body["enabled"])
+    if "max_positions" in body:
+        trade_executor.max_positions = max(1, min(10, int(body["max_positions"])))
+    if "max_position_pct" in body:
+        trade_executor.max_position_pct = max(1.0, min(50.0, float(body["max_position_pct"])))
+    return await get_auto_trade_config()
 
 
 # ─── 예측 API ──────────────────────────────────────────

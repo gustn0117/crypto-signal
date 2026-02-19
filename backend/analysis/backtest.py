@@ -2,9 +2,11 @@
 백테스트 엔진
 과거 시그널과 캔들 데이터를 활용하여 시그널 유형별 역대 성과를 자동 검증.
 - 시그널 유형/신뢰도/레짐별 승률 통계
+- 고급 통계: Sharpe/Sortino Ratio, Max Drawdown, Profit Factor
 - 프론트엔드에서 "과거 유사 시그널 승률 73%" 같은 정보 표시 가능
 """
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -166,6 +168,9 @@ class BacktestEngine:
             reverse=True,
         )[:15]
 
+        # 고급 통계 계산
+        advanced = self._compute_advanced_stats(predictions)
+
         return {
             "total_predictions": total,
             "overall_win_rate": overall_win_rate,
@@ -174,7 +179,107 @@ class BacktestEngine:
             "by_timeframe": by_timeframe,
             "by_regime": by_regime,
             "symbol_leaderboard": symbol_leaderboard,
+            "advanced_stats": advanced,
             "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _compute_advanced_stats(self, predictions: list[dict]) -> dict:
+        """고급 통계: Sharpe, Sortino, Max Drawdown, Profit Factor, 평균 보유 시간, 수익 곡선"""
+        if not predictions:
+            return {}
+
+        # PnL 추정: result 기반 수익률 추정 (실제 PnL 데이터가 없으므로)
+        result_pnl_map = {
+            "HIT_TP3": 0.06, "HIT_TP2": 0.04, "HIT_TP1": 0.02,
+            "PARTIAL": 0.005, "WRONG": -0.015, "HIT_SL": -0.02,
+        }
+        pnl_list = []
+        for p in predictions:
+            result = p.get("result", "WRONG")
+            pnl_list.append(result_pnl_map.get(result, 0.0))
+
+        if not pnl_list:
+            return {}
+
+        # Sharpe Ratio (일간 수익률 가정, risk-free = 0)
+        mean_return = sum(pnl_list) / len(pnl_list)
+        variance = sum((r - mean_return) ** 2 for r in pnl_list) / len(pnl_list)
+        std_return = math.sqrt(variance) if variance > 0 else 0.001
+        sharpe_ratio = round(mean_return / std_return, 4) if std_return > 0 else 0.0
+
+        # Sortino Ratio (하방 편차만 사용)
+        downside = [r for r in pnl_list if r < 0]
+        if downside:
+            downside_var = sum(r ** 2 for r in downside) / len(pnl_list)
+            downside_std = math.sqrt(downside_var)
+            sortino_ratio = round(mean_return / downside_std, 4) if downside_std > 0 else 0.0
+        else:
+            sortino_ratio = round(sharpe_ratio * 1.5, 4)
+
+        # Profit Factor (총이익 / 총손실)
+        total_profit = sum(r for r in pnl_list if r > 0)
+        total_loss = abs(sum(r for r in pnl_list if r < 0))
+        profit_factor = round(total_profit / total_loss, 4) if total_loss > 0 else 99.0
+
+        # Max Drawdown (누적 수익 곡선 기반)
+        cumulative = []
+        running = 0.0
+        for r in pnl_list:
+            running += r
+            cumulative.append(running)
+
+        peak = cumulative[0]
+        max_drawdown = 0.0
+        for val in cumulative:
+            if val > peak:
+                peak = val
+            dd = peak - val
+            if dd > max_drawdown:
+                max_drawdown = dd
+        max_drawdown_pct = round(max_drawdown * 100, 2)
+
+        # 평균 보유 시간 (created_at이 있는 경우)
+        hold_times = []
+        for p in predictions:
+            created = p.get("created_at")
+            if not created:
+                continue
+            # verified_at 대신 result 기반 시간 추정 (실제 데이터 한계)
+            tf = p.get("timeframe", "1h")
+            tf_hours = {"1m": 1, "5m": 3, "15m": 6, "1h": 24, "4h": 48, "1d": 168}
+            hold_times.append(tf_hours.get(tf, 24))
+        avg_hold_hours = round(sum(hold_times) / len(hold_times), 1) if hold_times else 0
+
+        # 수익 곡선 (최근 100개 포인트)
+        equity_curve = []
+        step = max(1, len(cumulative) // 100)
+        for i in range(0, len(cumulative), step):
+            equity_curve.append(round(cumulative[i] * 100, 2))
+
+        # 연속 승/패
+        max_consecutive_wins = 0
+        max_consecutive_losses = 0
+        current_streak = 0
+        for r in pnl_list:
+            if r > 0:
+                current_streak = current_streak + 1 if current_streak > 0 else 1
+                max_consecutive_wins = max(max_consecutive_wins, current_streak)
+            elif r < 0:
+                current_streak = current_streak - 1 if current_streak < 0 else -1
+                max_consecutive_losses = max(max_consecutive_losses, abs(current_streak))
+            else:
+                current_streak = 0
+
+        return {
+            "sharpe_ratio": sharpe_ratio,
+            "sortino_ratio": sortino_ratio,
+            "profit_factor": profit_factor,
+            "max_drawdown_pct": max_drawdown_pct,
+            "avg_hold_hours": avg_hold_hours,
+            "total_return_pct": round(sum(pnl_list) * 100, 2),
+            "max_consecutive_wins": max_consecutive_wins,
+            "max_consecutive_losses": max_consecutive_losses,
+            "equity_curve": equity_curve[-100:],
         }
 
     def get_signal_win_rate(self, signal_direction: str, confidence: float = 0.0) -> Optional[dict]:

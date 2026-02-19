@@ -199,6 +199,83 @@ def analyze_long_short_ratio(ratio: float | None) -> FuturesResult | None:
     )
 
 
+def detect_liquidation_cascade(
+    oi_history: list[dict],
+    price_history: list[float],
+) -> FuturesResult | None:
+    """
+    청산 캐스케이드 감지.
+    - OI 급감(>5%) + 가격 급변(>2%) = 청산 캐스케이드 경고
+    - 연속 3봉 OI 감소 + 같은 방향 가격 이동 = 강한 경고
+    oi_history: [{"current": float, "previous": float, "price_change_pct": float}, ...]
+    price_history: 최근 5개 가격 (마지막이 최신)
+    """
+    if not oi_history or len(oi_history) < 2:
+        return None
+
+    latest = oi_history[-1]
+    if latest.get("current") is None or latest.get("previous") is None:
+        return None
+    if latest["previous"] == 0:
+        return None
+
+    oi_change = ((latest["current"] - latest["previous"]) / latest["previous"]) * 100
+    price_change = latest.get("price_change_pct", 0) or 0
+
+    # 단일 봉 급변: OI -5% 이상 + 가격 ±2% 이상
+    if oi_change < -5.0 and abs(price_change) > 2.0:
+        if price_change < 0:
+            return FuturesResult(
+                name="청산 캐스케이드",
+                signal="long",
+                strength=min(abs(oi_change) / 15.0, 0.9),
+                value=oi_change,
+                description=f"OI {oi_change:.1f}% 급감 + 가격 {price_change:+.1f}% — 롱 청산 캐스케이드 (반등 가능)",
+            )
+        else:
+            return FuturesResult(
+                name="청산 캐스케이드",
+                signal="short",
+                strength=min(abs(oi_change) / 15.0, 0.9),
+                value=oi_change,
+                description=f"OI {oi_change:.1f}% 급감 + 가격 {price_change:+.1f}% — 숏 청산 캐스케이드 (하락 가능)",
+            )
+
+    # 연속 OI 감소 감지 (3봉 이상)
+    if len(oi_history) >= 3 and price_history and len(price_history) >= 3:
+        consecutive_oi_drop = all(
+            h.get("current", 0) < h.get("previous", 0)
+            for h in oi_history[-3:]
+            if h.get("current") is not None and h.get("previous") is not None
+        )
+        if consecutive_oi_drop:
+            price_direction = price_history[-1] - price_history[-3]
+            total_oi_drop = sum(
+                ((h["current"] - h["previous"]) / h["previous"]) * 100
+                for h in oi_history[-3:]
+                if h.get("previous") and h["previous"] != 0
+            )
+            if abs(total_oi_drop) > 3.0:
+                if price_direction < 0:
+                    return FuturesResult(
+                        name="연속 청산",
+                        signal="long",
+                        strength=min(abs(total_oi_drop) / 10.0, 0.8),
+                        value=total_oi_drop,
+                        description=f"3봉 연속 OI 감소 ({total_oi_drop:.1f}%) + 하락 — 롱 청산 진행 (반등 기회)",
+                    )
+                elif price_direction > 0:
+                    return FuturesResult(
+                        name="연속 청산",
+                        signal="short",
+                        strength=min(abs(total_oi_drop) / 10.0, 0.8),
+                        value=total_oi_drop,
+                        description=f"3봉 연속 OI 감소 ({total_oi_drop:.1f}%) + 상승 — 숏 청산 진행 (하락 기회)",
+                    )
+
+    return None
+
+
 async def get_futures_signals(client, symbol: str) -> list[FuturesResult]:
     """
     심볼에 대한 선물 데이터 수집 및 분석 통합.

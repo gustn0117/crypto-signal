@@ -182,5 +182,113 @@ class AsyncBinanceClient:
             pass
         return None
 
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict | None:
+        """오더북 조회 (bid/ask 각 limit개)"""
+        await self.ensure_markets()
+        try:
+            ob = await self.exchange.fetch_order_book(symbol, limit=limit)
+            return ob
+        except Exception:
+            return None
+
     async def close(self):
         await self.exchange.close()
+
+
+class AsyncBybitClient:
+    """Bybit 비동기 클라이언트 (멀티 거래소 지원)"""
+
+    def __init__(self):
+        from config import BYBIT_API_KEY, BYBIT_SECRET
+        self.exchange = ccxt_async.bybit({
+            "apiKey": BYBIT_API_KEY if BYBIT_API_KEY else None,
+            "secret": BYBIT_SECRET if BYBIT_SECRET else None,
+            "enableRateLimit": True,
+            "options": {"defaultType": "linear"},
+        })
+        self._markets_loaded = False
+
+    async def ensure_markets(self):
+        if not self._markets_loaded:
+            await self.exchange.load_markets()
+            self._markets_loaded = True
+
+    async def get_usdt_markets(self) -> List[dict]:
+        """Bybit USDT 선물 마켓 목록"""
+        await self.ensure_markets()
+        tickers = await self.exchange.fetch_tickers()
+        usdt_pairs = []
+        for symbol, ticker in tickers.items():
+            if "/USDT" not in symbol:
+                continue
+            quote_volume = ticker.get("quoteVolume", 0) or 0
+            if quote_volume < MIN_VOLUME_USDT:
+                continue
+            base_symbol = symbol.split(":")[0] if ":" in symbol else symbol
+            usdt_pairs.append({
+                "symbol": base_symbol,
+                "exchange": "bybit",
+                "price": ticker.get("last", 0),
+                "change_24h": ticker.get("percentage", 0),
+                "volume_usdt": quote_volume,
+            })
+        usdt_pairs.sort(key=lambda x: x["volume_usdt"], reverse=True)
+        return usdt_pairs
+
+    async def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 200) -> pd.DataFrame:
+        """Bybit 캔들 데이터"""
+        await self.ensure_markets()
+        ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+        return df
+
+    async def fetch_funding_rate(self, symbol: str) -> float | None:
+        """Bybit 펀딩레이트"""
+        await self.ensure_markets()
+        try:
+            funding = await self.exchange.fetch_funding_rate(symbol)
+            return funding.get("fundingRate")
+        except Exception:
+            return None
+
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict | None:
+        """Bybit 오더북"""
+        await self.ensure_markets()
+        try:
+            return await self.exchange.fetch_order_book(symbol, limit=limit)
+        except Exception:
+            return None
+
+    async def close(self):
+        await self.exchange.close()
+
+
+async def compare_exchange_prices(
+    binance_client: AsyncBinanceClient,
+    bybit_client: AsyncBybitClient,
+    symbols: List[str],
+) -> List[dict]:
+    """두 거래소 가격 비교 → 괴리율 감지."""
+    results = []
+    await binance_client.ensure_markets()
+    await bybit_client.ensure_markets()
+
+    for symbol in symbols:
+        try:
+            bn_ticker = await binance_client.exchange.fetch_ticker(symbol)
+            bb_ticker = await bybit_client.exchange.fetch_ticker(symbol)
+            bn_price = bn_ticker.get("last", 0)
+            bb_price = bb_ticker.get("last", 0)
+            if bn_price and bb_price:
+                spread_pct = ((bb_price - bn_price) / bn_price) * 100
+                results.append({
+                    "symbol": symbol,
+                    "binance_price": bn_price,
+                    "bybit_price": bb_price,
+                    "spread_pct": round(spread_pct, 4),
+                })
+        except Exception:
+            continue
+    return results

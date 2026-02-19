@@ -353,6 +353,25 @@ class SignalEngine:
                 if "LONG" in signal:
                     modifier += 0.03
 
+        # 뉴스 감성 보정
+        sentiment = ctx.get("sentiment_score")
+        if sentiment is not None:
+            if sentiment > 0.5:
+                if "LONG" in signal:
+                    modifier += 0.03
+                elif "SHORT" in signal:
+                    modifier -= 0.02
+            elif sentiment < -0.5:
+                if "SHORT" in signal:
+                    modifier += 0.03
+                elif "LONG" in signal:
+                    modifier -= 0.02
+
+        # 온체인 보정
+        onchain_mod = ctx.get("onchain_modifier", 0.0)
+        if onchain_mod != 0.0:
+            modifier += onchain_mod
+
         return max(0.0, min(1.0, confidence + modifier))
 
     def _build_indicator_snapshot(self, df: pd.DataFrame, timeframe: str = "1h") -> dict:

@@ -76,6 +76,7 @@ async def build_market_context(
     latest_signals: list[dict],
     btc_ticker: dict | None = None,
     all_tickers: list[dict] | None = None,
+    sentiment_api_key: str = "",
 ) -> dict:
     """
     시장 맥락 데이터 수집 및 통합.
@@ -106,5 +107,26 @@ async def build_market_context(
         if sig.get("symbol") == "BTC/USDT":
             context["btc_signal"] = sig.get("signal", "NEUTRAL")
             break
+
+    # 5. 뉴스 감성 분석
+    if sentiment_api_key:
+        try:
+            from .sentiment import fetch_crypto_sentiment
+            sentiment = await fetch_crypto_sentiment(sentiment_api_key)
+            if sentiment and sentiment.get("sentiment_score") is not None:
+                context["sentiment_score"] = sentiment["sentiment_score"]
+                context["sentiment_detail"] = sentiment
+        except Exception as e:
+            logger.debug("감성 분석 실패: %s", e)
+
+    # 6. 온체인 데이터
+    try:
+        from .onchain import fetch_onchain_data, get_onchain_modifier
+        onchain = await fetch_onchain_data()
+        if onchain:
+            context["onchain"] = onchain
+            context["onchain_modifier"] = get_onchain_modifier(onchain)
+    except Exception as e:
+        logger.debug("온체인 데이터 실패: %s", e)
 
     return context
