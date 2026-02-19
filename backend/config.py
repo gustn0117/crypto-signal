@@ -73,8 +73,12 @@ HIGHER_TF_MAP = {
     "1d": "1d",
 }
 
-# 분석 캔들 수 (깊은 분석용 - 대용량 스토리지 활용)
+# 분석 캔들 수 (깊은 분석용 - 백필/배치 분석)
 ANALYSIS_CANDLE_LIMIT = int(os.getenv("ANALYSIS_CANDLE_LIMIT", "2000"))
+
+# 실시간 분석 캔들 수 (API 응답 속도 최적화)
+REALTIME_CANDLE_LIMIT = int(os.getenv("REALTIME_CANDLE_LIMIT", "500"))
+REALTIME_HIGHER_TF_LIMIT = int(os.getenv("REALTIME_HIGHER_TF_LIMIT", "200"))
 
 # 히스토리 백필 설정 (대용량 스토리지 활용)
 BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "1825"))  # 5년치

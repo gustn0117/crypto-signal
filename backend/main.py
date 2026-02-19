@@ -53,7 +53,8 @@ from config import (
     HOST, PORT, SCAN_INTERVAL_SECONDS, TIMEFRAMES, DEFAULT_TIMEFRAME,
     ALLOWED_ORIGINS, LOG_LEVEL, LOG_DIR, HIGHER_TF_MAP,
     ALERT_ENABLED, ALERT_MIN_CONFIDENCE, ALERT_SIGNAL_TYPES, ALERT_COOLDOWN_MINUTES,
-    ANALYSIS_CANDLE_LIMIT, SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES,
+    ANALYSIS_CANDLE_LIMIT, REALTIME_CANDLE_LIMIT, REALTIME_HIGHER_TF_LIMIT,
+    SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES,
     BACKFILL_DAYS, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
 )
 from exchange import AsyncBinanceClient
@@ -100,6 +101,14 @@ _alert_cooldown_minutes = ALERT_COOLDOWN_MINUTES
 
 # 시장 맥락 캐시
 _market_context: dict = {}
+
+# 분석 결과 캐시 (symbol:timeframe -> {result, timestamp})
+_analysis_cache: Dict[str, dict] = {}
+ANALYSIS_CACHE_TTL = 15  # 15초 내 동일 요청은 캐시 반환
+
+# 선물 데이터 캐시 (symbol -> {data, timestamp})
+_futures_cache: Dict[str, dict] = {}
+FUTURES_CACHE_TTL = 60  # 60초
 
 # OI 히스토리 캐시 (심볼 -> 이전 OI 값)
 _oi_history: Dict[str, float] = {}
@@ -221,18 +230,18 @@ async def push_subscription_updates():
         try:
             symbol = sub["symbol"]
             timeframe = sub["timeframe"]
-            df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
+            df = await candle_repo.get_candles(symbol, timeframe, limit=REALTIME_CANDLE_LIMIT)
 
             higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
             higher_tf_df = None
             if higher_tf != timeframe:
                 try:
-                    higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
+                    higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=REALTIME_HIGHER_TF_LIMIT)
                 except Exception as e:
                     logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
-            # 선물 데이터 수집
-            futures_data = await get_futures_signals(async_client, symbol)
+            # 선물 데이터 (캐시 활용)
+            futures_data = await _get_futures_cached(symbol)
 
             signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
             signal_data = signal.to_dict()
@@ -896,6 +905,18 @@ async def get_markets():
         raise HTTPException(status_code=502, detail="거래소 연결 실패")
 
 
+async def _get_futures_cached(symbol: str) -> list:
+    """선물 데이터를 캐시하여 반복 호출 방지 (TTL 60초)"""
+    now = datetime.now(timezone.utc)
+    cached = _futures_cache.get(symbol)
+    if cached and (now - cached["ts"]).total_seconds() < FUTURES_CACHE_TTL:
+        return cached["data"]
+
+    data = await get_futures_signals(async_client, symbol)
+    _futures_cache[symbol] = {"data": data, "ts": now}
+    return data
+
+
 @app.get("/api/analyze/{symbol}")
 async def analyze_symbol(
     symbol: str,
@@ -904,8 +925,16 @@ async def analyze_symbol(
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
+    # 캐시 확인 (15초 내 동일 요청)
+    cache_key = f"{symbol}:{timeframe}"
+    now = datetime.now(timezone.utc)
+    cached = _analysis_cache.get(cache_key)
+    if cached and (now - cached["ts"]).total_seconds() < ANALYSIS_CACHE_TTL:
+        return cached["result"]
+
     try:
-        df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
+        # 실시간 분석용 캔들 수 (500개 — 지표 계산에 충분)
+        df = await candle_repo.get_candles(symbol, timeframe, limit=REALTIME_CANDLE_LIMIT)
 
         if len(df) < 20:
             raise HTTPException(status_code=400, detail=f"데이터 부족: {len(df)}개 캔들 (최소 20개 필요)")
@@ -914,12 +943,13 @@ async def analyze_symbol(
         higher_tf_df = None
         if higher_tf != timeframe:
             try:
-                higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
+                # 상위TF는 200개면 충분
+                higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=REALTIME_HIGHER_TF_LIMIT)
             except Exception as e:
                 logger.warning("상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
-        # 선물 데이터 수집
-        futures_data = await get_futures_signals(async_client, symbol)
+        # 선물 데이터 (캐시 활용, TTL 60초)
+        futures_data = await _get_futures_cached(symbol)
 
         signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
         result = signal.to_dict()
@@ -952,6 +982,9 @@ async def analyze_symbol(
                 quality["btc_beta"] = beta
         if quality:
             result["quality"] = quality
+
+        # 결과 캐싱
+        _analysis_cache[cache_key] = {"result": result, "ts": now}
 
         return result
     except HTTPException:

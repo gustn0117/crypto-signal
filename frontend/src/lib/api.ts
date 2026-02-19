@@ -252,13 +252,13 @@ export async function analyzeSymbol(
   );
 }
 
-// 타임프레임별 기본 캔들 수 (2년치 기준)
+// 타임프레임별 기본 캔들 수 (차트 표시 최적화)
 const TF_DEFAULT_LIMIT: Record<string, number> = {
-  "15m": 2000,  // ~20일
-  "30m": 2000,  // ~41일
-  "1h": 2000,   // ~83일
-  "4h": 4380,   // ~2년
-  "1d": 730,    // ~2년
+  "15m": 400,   // ~4일
+  "30m": 400,   // ~8일
+  "1h": 500,    // ~20일
+  "4h": 500,    // ~83일
+  "1d": 365,    // ~1년
 };
 
 export async function fetchOHLCV(
