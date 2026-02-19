@@ -122,6 +122,10 @@ _server_started_at: str = datetime.now(timezone.utc).isoformat()
 _ticker_cache: Dict[str, dict] = {}
 _ticker_cache_at: Optional[datetime] = None
 TICKER_CACHE_TTL = 15  # 15초
+
+# OHLCV 프리워밍 캐시 (symbol:timeframe -> {candles: list, ts: datetime})
+_ohlcv_cache: Dict[str, dict] = {}
+OHLCV_CACHE_TTL = 10  # 10초
 _ticker_cache_lock = asyncio.Lock()
 _market_context_lock = asyncio.Lock()
 
@@ -798,6 +802,36 @@ async def run_backfill():
         logger.error("백필 실패: %s", e)
 
 
+async def run_ohlcv_prewarmer():
+    """10개 코인의 OHLCV를 백그라운드에서 프리워밍 (즉시 응답용)"""
+    global _ohlcv_cache
+    try:
+        for symbol in SCAN_SYMBOLS:
+            for tf in SCAN_TIMEFRAMES:
+                cache_key = f"{symbol}:{tf}"
+                try:
+                    df = await candle_repo.get_candles(symbol, tf, limit=500)
+                    candles = []
+                    for ts, row in df.iterrows():
+                        candles.append({
+                            "time": int(ts.timestamp()),
+                            "open": row["open"],
+                            "high": row["high"],
+                            "low": row["low"],
+                            "close": row["close"],
+                            "volume": row["volume"],
+                        })
+                    _ohlcv_cache[cache_key] = {
+                        "candles": candles,
+                        "ts": datetime.now(timezone.utc),
+                    }
+                except Exception as e:
+                    logger.debug("OHLCV 프리워밍 실패 [%s/%s]: %s", symbol, tf, e)
+        await _refresh_ticker_cache()
+    except Exception as e:
+        logger.warning("OHLCV 프리워밍 전체 실패: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer
@@ -844,8 +878,9 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_backtest_update, "interval", hours=6)
     scheduler.add_job(run_correlation_update, "interval", minutes=5)
     scheduler.add_job(run_backfill, "interval", hours=24)
+    scheduler.add_job(run_ohlcv_prewarmer, "interval", seconds=10, id="ohlcv_prewarmer", max_instances=1)
     scheduler.start()
-    logger.info("멀티TF 스캐너 시작: %s, 자기학습/백테스트/상관관계 활성화", SCAN_TIMEFRAMES)
+    logger.info("멀티TF 스캐너 시작: %s, OHLCV 프리워밍 활성화, 자기학습/백테스트/상관관계 활성화", SCAN_TIMEFRAMES)
 
     # 백필: 백그라운드로 즉시 시작
     asyncio.create_task(run_backfill())
@@ -1034,6 +1069,15 @@ async def get_ohlcv(
     timeframe = _validate_timeframe(timeframe)
     symbol = _normalize_symbol(symbol)
 
+    # 1) 프리워밍 캐시에서 즉시 반환 (limit=500, TTL 내)
+    cache_key = f"{symbol}:{timeframe}"
+    cached = _ohlcv_cache.get(cache_key)
+    if cached and limit <= 500:
+        age = (datetime.now(timezone.utc) - cached["ts"]).total_seconds()
+        if age < OHLCV_CACHE_TTL:
+            return {"symbol": symbol, "timeframe": timeframe, "candles": cached["candles"]}
+
+    # 2) 캐시 미스 — DB 조회 (폴백)
     try:
         df = await candle_repo.get_candles(symbol, timeframe, limit=limit)
         candles = []
@@ -1085,9 +1129,11 @@ async def get_indicator_series(
 @app.get("/api/ticker/{symbol}")
 async def get_ticker(symbol: str):
     symbol = _normalize_symbol(symbol)
-    try:
-        await async_client.ensure_markets()
-        ticker = await async_client.exchange.fetch_ticker(symbol)
+
+    # 1) 배치 캐시에서 즉시 반환 (가장 빠름)
+    await _refresh_ticker_cache()
+    ticker = _ticker_cache.get(symbol)
+    if ticker:
         return {
             "symbol": symbol,
             "price": ticker.get("last", 0),
@@ -1097,6 +1143,21 @@ async def get_ticker(symbol: str):
             "low_24h": ticker.get("low", 0),
             "bid": ticker.get("bid", 0),
             "ask": ticker.get("ask", 0),
+        }
+
+    # 2) 캐시에 없으면 개별 조회 (폴백)
+    try:
+        await async_client.ensure_markets()
+        t = await async_client.exchange.fetch_ticker(symbol)
+        return {
+            "symbol": symbol,
+            "price": t.get("last", 0),
+            "change_24h": t.get("percentage", 0),
+            "volume_usdt": t.get("quoteVolume", 0),
+            "high_24h": t.get("high", 0),
+            "low_24h": t.get("low", 0),
+            "bid": t.get("bid", 0),
+            "ask": t.get("ask", 0),
         }
     except Exception as e:
         logger.error("티커 조회 실패 [%s]: %s", symbol, e)
