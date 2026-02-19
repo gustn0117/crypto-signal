@@ -36,16 +36,28 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize(obj):
-    """NaN/Infinity를 JSON 안전 값으로 변환 (재귀)"""
+    """NaN/Infinity/numpy 타입을 JSON 안전 값으로 변환 (재귀)"""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    # numpy ndarray → Python list
+    if hasattr(obj, "tolist") and hasattr(obj, "ndim"):
+        return _sanitize(obj.tolist())
+    # numpy scalar → Python native
+    if hasattr(obj, "item"):
+        obj = obj.item()
     if isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return 0.0
         return obj
-    if isinstance(obj, dict):
-        return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize(v) for v in obj]
-    return obj
+    if isinstance(obj, (int, bool, str)) or obj is None:
+        return obj
+    # 알 수 없는 타입 → str 변환
+    try:
+        return float(obj)
+    except (TypeError, ValueError):
+        return str(obj)
 
 
 @dataclass

@@ -5,13 +5,48 @@ REST API + WebSocket + 멀티TF 스캔 + 선물 데이터 + DB 알림 + 시장 �
 import asyncio
 import json
 import logging
+import math
 from contextlib import asynccontextmanager
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """NaN/Infinity/numpy를 안전하게 직렬화"""
+    def default(self, o):
+        if hasattr(o, "item"):
+            return o.item()
+        if hasattr(o, "tolist"):
+            return o.tolist()
+        return super().default(o)
+
+    def encode(self, o):
+        return super().encode(self._clean(o))
+
+    def _clean(self, obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return 0.0
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._clean(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._clean(v) for v in obj]
+        if hasattr(obj, "item"):
+            return self._clean(obj.item())
+        if hasattr(obj, "tolist"):
+            return self._clean(obj.tolist())
+        return obj
+
+
+def _safe_dumps(obj) -> str:
+    """NaN-safe json.dumps"""
+    return json.dumps(obj, cls=_SafeEncoder)
 
 from logging_config import setup_logging
 from config import (
@@ -161,7 +196,7 @@ async def _push_transition_alert(transition: dict):
         if alert_id:
             alert["id"] = alert_id
 
-    await _broadcast_ws(json.dumps({"type": "alert", "data": alert}))
+    await _broadcast_ws(_safe_dumps({"type": "alert", "data": alert}))
 
 
 async def push_subscription_updates():
@@ -204,7 +239,7 @@ async def push_subscription_updates():
                 except Exception:
                     pass
 
-            await ws.send_text(json.dumps({
+            await ws.send_text(_safe_dumps({
                 "type": "subscription_update",
                 "data": signal_data
             }))
@@ -301,7 +336,7 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
 
     pred = await prediction_repo.get_prediction_by_id(pred_id)
     if pred and connected_clients:
-        await _broadcast_ws(json.dumps({
+        await _broadcast_ws(_safe_dumps({
             "type": "prediction_created",
             "data": pred,
         }))
@@ -352,7 +387,7 @@ async def scheduled_scan_tf(timeframe: str):
         for tr in (scanner.latest_transitions or []):
             if tr.get("to_state") in ("CONFIRMED", "WEAKENING", "EXPIRED"):
                 try:
-                    await _broadcast_ws(json.dumps({
+                    await _broadcast_ws(_safe_dumps({
                         "type": "signal_transition",
                         "data": tr
                     }))
@@ -361,7 +396,7 @@ async def scheduled_scan_tf(timeframe: str):
 
     # scan_update 브로드캐스트
     if connected_clients:
-        await _broadcast_ws(json.dumps({
+        await _broadcast_ws(_safe_dumps({
             "type": "scan_update",
             "data": scanner.get_latest_signals(timeframe)
         }))
@@ -459,7 +494,7 @@ async def update_prediction_progress():
                         result = await _verify_single_prediction(pred)
                         logger.info("조기 검증 완료: %s #%d (%s)", symbol, pred["id"], "SL" if hit_sl else "TP3")
                         if connected_clients:
-                            await _broadcast_ws(json.dumps({
+                            await _broadcast_ws(_safe_dumps({
                                 "type": "prediction_verified",
                                 "data": result,
                             }))
@@ -470,7 +505,7 @@ async def update_prediction_progress():
                 logger.debug("진행 추적 실패 [%s #%d]: %s", pred.get("symbol"), pred.get("id"), e)
 
         if progress_updates and connected_clients:
-            await _broadcast_ws(json.dumps({
+            await _broadcast_ws(_safe_dumps({
                 "type": "prediction_progress",
                 "data": progress_updates,
             }))
@@ -721,11 +756,18 @@ async def lifespan(app: FastAPI):
     logger.info("서버 종료 완료")
 
 
+class _SafeJSONResponse(JSONResponse):
+    """NaN/numpy 안전 JSON 응답"""
+    def render(self, content) -> bytes:
+        return _safe_dumps(content).encode("utf-8")
+
+
 app = FastAPI(
     title="Crypto Signal System",
     description="암호화폐 롱/숏 시그널 분석 시스템 v2",
     version="4.0.0",
     lifespan=lifespan,
+    default_response_class=_SafeJSONResponse,
 )
 
 app.add_middleware(
@@ -1201,7 +1243,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         latest = scanner.get_latest_signals()
         unread_count = await alert_repo.get_unread_count() if alert_repo else 0
-        await websocket.send_text(json.dumps({
+        await websocket.send_text(_safe_dumps({
             "type": "initial",
             "data": {**latest, "unread_alerts": unread_count}
         }))
@@ -1248,12 +1290,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         except Exception:
                             pass
 
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_safe_dumps({
                         "type": "subscription_update",
                         "data": signal_data
                     }))
                 except Exception as e:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_safe_dumps({
                         "type": "error",
                         "message": str(e)
                     }))
@@ -1270,12 +1312,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     symbol = _normalize_symbol(symbol)
                     df = await candle_repo.get_candles(symbol, timeframe, limit=ANALYSIS_CANDLE_LIMIT)
                     signal = engine.analyze(df, symbol, timeframe)
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_safe_dumps({
                         "type": "analysis",
                         "data": signal.to_dict()
                     }))
                 except Exception as e:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_safe_dumps({
                         "type": "error",
                         "message": str(e)
                     }))
