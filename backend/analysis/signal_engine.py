@@ -22,14 +22,20 @@ from .indicators import (
     analyze_cci,
     analyze_mfi,
     analyze_cmf,
+    analyze_ma_cross_50_200,
+    analyze_eom,
+    analyze_kvo,
+    analyze_vortex,
     IndicatorResult,
+    TF_CATEGORY,
 )
 from .candle_patterns import analyze_candle_patterns, CandlePatternResult
 from .chart_patterns import analyze_chart_patterns, ChartPatternResult
 from .volume import analyze_volume, VolumeResult
 from .levels import calculate_levels, PriceLevels
 from .trade_params import calculate_trade_params, TradeParams
-from .mtf import check_higher_tf, MTFConfirmation
+from .mtf import check_higher_tf, check_multi_tf, MTFConfirmation, SECOND_HIGHER_TF_MAP
+from .regime import detect_regime
 import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
@@ -127,6 +133,14 @@ class SignalEngine:
         "futures_data": 0.18,
     }
 
+    # 레짐별 카테고리 가중치 배율
+    REGIME_WEIGHT_MODIFIERS = {
+        "TRENDING_UP":   {"indicators": 1.3, "candle_patterns": 0.7, "chart_patterns": 1.1, "volume": 0.9, "futures_data": 1.0},
+        "TRENDING_DOWN": {"indicators": 1.3, "candle_patterns": 0.7, "chart_patterns": 1.1, "volume": 0.9, "futures_data": 1.0},
+        "RANGING":       {"indicators": 0.8, "candle_patterns": 1.3, "chart_patterns": 1.0, "volume": 1.3, "futures_data": 1.1},
+        "VOLATILE":      {"indicators": 0.9, "candle_patterns": 0.8, "chart_patterns": 0.8, "volume": 1.2, "futures_data": 1.4},
+    }
+
     def __init__(self):
         self._adaptive_weights: dict | None = None
         self._market_context: dict | None = None
@@ -152,11 +166,12 @@ class SignalEngine:
         timeframe: str,
         higher_tf_df: Optional[pd.DataFrame] = None,
         futures_data: Optional[List] = None,
+        higher_tf_dfs: Optional[dict] = None,
     ) -> TradeSignal:
         """종합 분석 수행 후 TradeSignal 반환"""
         current_price = df["close"].iloc[-1]
 
-        # 1) 기술적 지표 분석 (12개 — 타임프레임별 파라미터 적용)
+        # 1) 기술적 지표 분석 (16개 — 타임프레임별 파라미터 적용)
         indicator_results: List[IndicatorResult] = [
             analyze_rsi(df, timeframe=timeframe),
             analyze_macd(df, timeframe=timeframe),
@@ -170,6 +185,10 @@ class SignalEngine:
             analyze_cci(df, timeframe=timeframe),
             analyze_mfi(df, timeframe=timeframe),
             analyze_cmf(df, timeframe=timeframe),
+            analyze_ma_cross_50_200(df),
+            analyze_eom(df, timeframe=timeframe),
+            analyze_kvo(df, timeframe=timeframe),
+            analyze_vortex(df, timeframe=timeframe),
         ]
 
         # 2) 캔들 패턴 분석
@@ -201,8 +220,9 @@ class SignalEngine:
             [(r.signal, r.strength) for r in futures_results]
         ) if futures_results else 0.0
 
-        # 7) 가중 합산
-        w = self.weights
+        # 7) 레짐 감지 + 가중 합산
+        regime = detect_regime(df)
+        w = self._get_regime_adjusted_weights(regime.regime)
         total_score = (
             indicator_score * w.get("indicators", 0.30)
             + candle_score * w.get("candle_patterns", 0.12)
@@ -210,9 +230,18 @@ class SignalEngine:
             + volume_score * w.get("volume", 0.15)
             + futures_score * w.get("futures_data", 0.18)
         )
+        logger.debug("레짐=%s 가중치=%s", regime.regime, {k: round(v, 3) for k, v in w.items()})
 
-        # 8) 시그널 결정
-        signal, confidence = self._determine_signal(total_score)
+        # 8) 시그널 결정 (레짐별 동적 임계값 적용)
+        signal, confidence = self._determine_signal(total_score, regime=regime.regime)
+
+        # 8.5) 지표 합류(Confluence) 보너스
+        confluence_bonus = self._detect_confluence(indicator_results)
+        if confluence_bonus != 0.0:
+            confidence = max(0.0, min(1.0, confidence + confluence_bonus))
+
+        # 8.6) 스캘프 TF 거래량 필터 (저거래량 시 신뢰도 감소)
+        confidence = self._scalp_volume_filter(df, timeframe, confidence)
 
         # 9) 시장 맥락 보정 (BTC 도미넌스, Fear & Greed 등)
         if self._market_context and symbol != "BTC/USDT":
@@ -221,19 +250,28 @@ class SignalEngine:
         # 10) 가격 레벨 계산
         levels = calculate_levels(df)
 
-        # 11) 멀티 타임프레임 확인
+        # 11) 멀티 타임프레임 확인 (2단계 상위 TF)
         mtf_result: Optional[MTFConfirmation] = None
-        if higher_tf_df is not None and len(higher_tf_df) >= 50:
-            from config import HIGHER_TF_MAP
-            higher_tf = HIGHER_TF_MAP.get(timeframe, timeframe)
-            mtf_result = check_higher_tf(higher_tf_df, signal, higher_tf)
+        from config import HIGHER_TF_MAP
+        htf1_name = HIGHER_TF_MAP.get(timeframe, timeframe)
+        htf2_name = SECOND_HIGHER_TF_MAP.get(timeframe, timeframe)
+
+        # higher_tf_dfs 딕셔너리 우선, 없으면 기존 higher_tf_df 사용
+        htf1_df = (higher_tf_dfs or {}).get(htf1_name, higher_tf_df)
+        htf2_df = (higher_tf_dfs or {}).get(htf2_name)
+
+        if htf1_df is not None and len(htf1_df) >= 50:
+            if htf2_df is not None and len(htf2_df) >= 50 and htf1_name != htf2_name:
+                mtf_result = check_multi_tf(htf1_df, htf2_df, signal, htf1_name, htf2_name)
+            else:
+                mtf_result = check_higher_tf(htf1_df, signal, htf1_name)
             if mtf_result:
                 confidence = max(0.0, min(1.0, confidence + mtf_result.confidence_modifier))
 
         # 12) 트레이드 파라미터 계산
         trade_params_result: Optional[TradeParams] = None
         if signal != "NEUTRAL":
-            trade_params_result = calculate_trade_params(df, signal, levels, timeframe=timeframe)
+            trade_params_result = calculate_trade_params(df, signal, levels, timeframe=timeframe, confidence=confidence)
 
         # 13) 지표 스냅샷 생성
         indicator_snapshot = self._build_indicator_snapshot(df, timeframe)
@@ -370,6 +408,104 @@ class SignalEngine:
 
         return snapshot
 
+    def _get_regime_adjusted_weights(self, regime: str) -> dict:
+        """레짐에 따라 카테고리 가중치를 조정 (정규화 포함)."""
+        base = self.weights
+        modifiers = self.REGIME_WEIGHT_MODIFIERS.get(regime)
+        if not modifiers:
+            return base  # UNKNOWN 등 → 기본 가중치
+
+        adjusted = {k: base.get(k, 0) * modifiers.get(k, 1.0) for k in base}
+        total = sum(adjusted.values())
+        if total > 0:
+            adjusted = {k: v / total for k, v in adjusted.items()}
+        return adjusted
+
+    def _detect_confluence(self, indicator_results: List[IndicatorResult]) -> float:
+        """
+        지표 합류(Confluence) 감지 — 확장 버전.
+        여러 지표 조합이 같은 방향을 가리킬 때 신뢰도 보너스.
+        최대 +0.15.
+        """
+        bonus = 0.0
+        by_name = {r.name: r for r in indicator_results}
+
+        # 1) 핵심 3지표 합류: RSI + MACD + EMA 동일 방향 + strength > 0.5 → +0.05
+        core_names = ("RSI", "MACD", "EMA")
+        core = [by_name[n] for n in core_names if n in by_name]
+        if len(core) == 3:
+            dirs = [r.signal for r in core]
+            if (len(set(dirs)) == 1
+                    and dirs[0] != "neutral"
+                    and all(r.strength > 0.5 for r in core)):
+                bonus += 0.05
+
+        # 2) MA50/200 골든/데드크로스 보너스 → +0.03
+        ma_cross = by_name.get("MA50/200")
+        if ma_cross and ma_cross.strength >= 0.7:
+            bonus += 0.03
+
+        # 3) 스토캐스틱 + RSI 동시 과매수/과매도 → +0.03
+        rsi = by_name.get("RSI")
+        stoch = by_name.get("Stochastic")
+        if rsi and stoch:
+            if (rsi.signal == stoch.signal
+                    and rsi.signal != "neutral"
+                    and rsi.strength >= 0.6
+                    and stoch.strength >= 0.6):
+                bonus += 0.03
+
+        # 4) 볼린저밴드 + ADX 합류: BB 극단 + ADX 추세 → +0.02
+        bb = by_name.get("Bollinger Bands")
+        adx = by_name.get("ADX")
+        if bb and adx:
+            if (bb.signal != "neutral" and bb.strength >= 0.6
+                    and adx.signal != "neutral" and adx.strength >= 0.5):
+                bonus += 0.02
+
+        # 5) 거래량 지표 합류: MFI + CMF 동일 방향 → +0.02
+        mfi = by_name.get("MFI")
+        cmf = by_name.get("CMF")
+        if mfi and cmf:
+            if (mfi.signal == cmf.signal
+                    and mfi.signal != "neutral"
+                    and mfi.strength >= 0.5
+                    and cmf.strength >= 0.5):
+                bonus += 0.02
+
+        return min(bonus, 0.15)
+
+    def _scalp_volume_filter(self, df: pd.DataFrame, timeframe: str, confidence: float) -> float:
+        """
+        스캘프 TF(1m, 5m)에서 거래량이 낮으면 신뢰도를 감소시킴.
+        거래량이 20봉 평균의 0.5배 미만이면 최대 -0.15 페널티.
+        """
+        if TF_CATEGORY.get(timeframe) != "scalp":
+            return confidence
+
+        if "volume" not in df.columns or len(df) < 21:
+            return confidence
+
+        vol = df["volume"]
+        avg_vol = float(vol.iloc[-21:-1].mean())
+        current_vol = float(vol.iloc[-1])
+
+        if avg_vol <= 0:
+            return confidence
+
+        ratio = current_vol / avg_vol
+        if ratio < 0.5:
+            # 거래량 매우 낮음: 최대 -0.15 페널티
+            penalty = 0.15 * (1.0 - ratio / 0.5)
+            confidence = max(0.0, confidence - penalty)
+            logger.debug("스캘프 거래량 필터: ratio=%.2f, penalty=%.3f", ratio, penalty)
+        elif ratio < 0.8:
+            # 거래량 다소 낮음: 최대 -0.05 페널티
+            penalty = 0.05 * (1.0 - (ratio - 0.5) / 0.3)
+            confidence = max(0.0, confidence - penalty)
+
+        return confidence
+
     def _calc_category_score(self, signals: list[tuple[str, float]]) -> float:
         """카테고리 점수 계산 (-1.0 ~ 1.0)"""
         if not signals:
@@ -384,17 +520,29 @@ class SignalEngine:
 
         return max(min(score / len(signals), 1.0), -1.0)
 
-    def _determine_signal(self, total_score: float) -> tuple[str, float]:
-        """총점에서 최종 시그널 및 신뢰도 결정"""
-        confidence = abs(total_score)
+    # 레짐별 동적 시그널 임계값
+    REGIME_SIGNAL_THRESHOLDS: dict[str, dict[str, float]] = {
+        "TRENDING_UP":   {"strong": 0.50, "normal": 0.15},   # 추세 방향 진입 쉽게
+        "TRENDING_DOWN": {"strong": 0.50, "normal": 0.15},
+        "RANGING":       {"strong": 0.70, "normal": 0.30},   # 더 확실할 때만 진입
+        "VOLATILE":      {"strong": 0.65, "normal": 0.25},   # 약간 엄격
+    }
+    _DEFAULT_THRESHOLDS = {"strong": 0.60, "normal": 0.20}
 
-        if total_score >= 0.6:
+    def _determine_signal(self, total_score: float, regime: str = "UNKNOWN") -> tuple[str, float]:
+        """총점에서 최종 시그널 및 신뢰도 결정 (레짐별 동적 임계값)"""
+        confidence = abs(total_score)
+        th = self.REGIME_SIGNAL_THRESHOLDS.get(regime, self._DEFAULT_THRESHOLDS)
+        strong_th = th["strong"]
+        normal_th = th["normal"]
+
+        if total_score >= strong_th:
             return "STRONG_LONG", min(confidence, 1.0)
-        elif total_score >= 0.2:
+        elif total_score >= normal_th:
             return "LONG", min(confidence, 1.0)
-        elif total_score <= -0.6:
+        elif total_score <= -strong_th:
             return "STRONG_SHORT", min(confidence, 1.0)
-        elif total_score <= -0.2:
+        elif total_score <= -normal_th:
             return "SHORT", min(confidence, 1.0)
         else:
             return "NEUTRAL", confidence

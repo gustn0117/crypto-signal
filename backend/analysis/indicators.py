@@ -460,6 +460,52 @@ def analyze_mfi(df: pd.DataFrame, period: int = 14, timeframe: str = "1h") -> In
         return IndicatorResult("MFI", "neutral", 0.0, 0.0, "분석 오류")
 
 
+def analyze_ma_cross_50_200(df: pd.DataFrame) -> IndicatorResult:
+    """SMA 50/200 크로스 — 장기 추세 전환 감지"""
+    try:
+        if len(df) < 210:
+            return IndicatorResult("MA50/200", "neutral", 0.0, 0.0, "데이터 부족 (최소 210봉 필요)")
+
+        sma50 = ta.sma(df["close"], length=50)
+        sma200 = ta.sma(df["close"], length=200)
+
+        if sma50 is None or sma200 is None:
+            return IndicatorResult("MA50/200", "neutral", 0.0, 0.0, "SMA 계산 실패")
+
+        if len(sma50.dropna()) < 2 or len(sma200.dropna()) < 2:
+            return IndicatorResult("MA50/200", "neutral", 0.0, 0.0, "데이터 부족")
+
+        curr_50 = float(sma50.iloc[-1])
+        prev_50 = float(sma50.iloc[-2])
+        curr_200 = float(sma200.iloc[-1])
+        prev_200 = float(sma200.iloc[-2])
+
+        # 골든크로스: SMA50이 SMA200을 상향 돌파
+        if prev_50 <= prev_200 and curr_50 > curr_200:
+            return IndicatorResult("MA50/200", "long", 0.8, curr_50,
+                                   "SMA50/200 골든크로스 (강한 상승 전환)")
+
+        # 데드크로스: SMA50이 SMA200을 하향 돌파
+        if prev_50 >= prev_200 and curr_50 < curr_200:
+            return IndicatorResult("MA50/200", "short", 0.8, curr_50,
+                                   "SMA50/200 데드크로스 (강한 하락 전환)")
+
+        # 이미 위/아래인 경우: 갭 비율 기반 strength
+        gap_ratio = abs(curr_50 - curr_200) / curr_200 * 100 if curr_200 > 0 else 0
+        strength = min(0.3 + gap_ratio * 0.04, 0.5)
+
+        if curr_50 > curr_200:
+            return IndicatorResult("MA50/200", "long", strength, curr_50,
+                                   f"SMA50 > SMA200 (갭 {gap_ratio:.1f}%, 상승 추세 유지)")
+        else:
+            return IndicatorResult("MA50/200", "short", strength, curr_50,
+                                   f"SMA50 < SMA200 (갭 {gap_ratio:.1f}%, 하락 추세 유지)")
+
+    except Exception as e:
+        logger.error("MA50/200 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("MA50/200", "neutral", 0.0, 0.0, "분석 오류")
+
+
 def analyze_cmf(df: pd.DataFrame, period: int = 20, timeframe: str = "1h") -> IndicatorResult:
     """CMF (Chaikin Money Flow) — 자금 유입/유출 방향"""
     try:
@@ -489,3 +535,140 @@ def analyze_cmf(df: pd.DataFrame, period: int = 20, timeframe: str = "1h") -> In
     except Exception as e:
         logger.error("CMF 분석 오류: %s", e, exc_info=True)
         return IndicatorResult("CMF", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_eom(df: pd.DataFrame, timeframe: str = "1h") -> IndicatorResult:
+    """EOM (Ease of Movement) — 가격 이동 용이성"""
+    try:
+        p = get_params(timeframe)
+        length = p.get("mfi_period", 14)
+        eom = ta.eom(df["high"], df["low"], df["close"], df["volume"], length=length)
+        if eom is None or eom.empty or len(eom.dropna()) < 2:
+            return IndicatorResult("EOM", "neutral", 0.0, 0.0, "데이터 부족")
+
+        curr = float(eom.dropna().iloc[-1])
+        prev = float(eom.dropna().iloc[-2])
+
+        # 제로라인 크로스
+        if prev <= 0 and curr > 0:
+            return IndicatorResult("EOM", "long", 0.7, curr,
+                                   "EOM 제로라인 상향 돌파 — 매수세 유입")
+        elif prev >= 0 and curr < 0:
+            return IndicatorResult("EOM", "short", 0.7, curr,
+                                   "EOM 제로라인 하향 돌파 — 매도세 유입")
+        elif curr > 0:
+            strength = min(abs(curr) * 0.01, 0.5)
+            return IndicatorResult("EOM", "long", strength, curr,
+                                   f"EOM {curr:.2f} — 매수세 우세")
+        elif curr < 0:
+            strength = min(abs(curr) * 0.01, 0.5)
+            return IndicatorResult("EOM", "short", strength, curr,
+                                   f"EOM {curr:.2f} — 매도세 우세")
+        return IndicatorResult("EOM", "neutral", 0.0, curr, "EOM 중립")
+    except Exception as e:
+        logger.error("EOM 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("EOM", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_kvo(df: pd.DataFrame, timeframe: str = "1h") -> IndicatorResult:
+    """KVO (Klinger Volume Oscillator) — 거래량 기반 추세 확인"""
+    try:
+        kvo_df = ta.kvo(df["high"], df["low"], df["close"], df["volume"],
+                        fast=34, slow=55, signal=13)
+        if kvo_df is None or kvo_df.empty:
+            return IndicatorResult("KVO", "neutral", 0.0, 0.0, "데이터 부족")
+
+        # KVO 라인과 시그널 라인
+        kvo_col = [c for c in kvo_df.columns if "KVO_" in c and "s_" not in c.lower()]
+        sig_col = [c for c in kvo_df.columns if "KVOs_" in c or "s_" in c.lower()]
+
+        if not kvo_col:
+            kvo_col = [kvo_df.columns[0]]
+        if not sig_col and len(kvo_df.columns) > 1:
+            sig_col = [kvo_df.columns[1]]
+
+        kvo_line = kvo_df[kvo_col[0]].dropna()
+        if len(kvo_line) < 2:
+            return IndicatorResult("KVO", "neutral", 0.0, 0.0, "데이터 부족")
+
+        curr_kvo = float(kvo_line.iloc[-1])
+
+        if sig_col:
+            sig_line = kvo_df[sig_col[0]].dropna()
+            if len(sig_line) >= 2:
+                curr_sig = float(sig_line.iloc[-1])
+                prev_kvo = float(kvo_line.iloc[-2])
+                prev_sig = float(sig_line.iloc[-2])
+
+                if prev_kvo <= prev_sig and curr_kvo > curr_sig:
+                    return IndicatorResult("KVO", "long", 0.7, curr_kvo,
+                                           "KVO 시그널 상향 돌파 — 매수 모멘텀")
+                elif prev_kvo >= prev_sig and curr_kvo < curr_sig:
+                    return IndicatorResult("KVO", "short", 0.7, curr_kvo,
+                                           "KVO 시그널 하향 돌파 — 매도 모멘텀")
+
+        # 크로스 미발생: 방향만 판단
+        if curr_kvo > 0:
+            return IndicatorResult("KVO", "long", 0.3, curr_kvo,
+                                   f"KVO 양수 ({curr_kvo:.0f}) — 매수세")
+        elif curr_kvo < 0:
+            return IndicatorResult("KVO", "short", 0.3, curr_kvo,
+                                   f"KVO 음수 ({curr_kvo:.0f}) — 매도세")
+        return IndicatorResult("KVO", "neutral", 0.0, curr_kvo, "KVO 중립")
+    except Exception as e:
+        logger.error("KVO 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("KVO", "neutral", 0.0, 0.0, "분석 오류")
+
+
+def analyze_vortex(df: pd.DataFrame, timeframe: str = "1h") -> IndicatorResult:
+    """Vortex Indicator — 추세 방향 및 강도"""
+    try:
+        p = get_params(timeframe)
+        length = p.get("adx_period", 14)
+        vtx = ta.vortex(df["high"], df["low"], df["close"], length=length)
+        if vtx is None or vtx.empty:
+            return IndicatorResult("Vortex", "neutral", 0.0, 0.0, "데이터 부족")
+
+        vip_col = [c for c in vtx.columns if "VTXP" in c or "VTXp" in c]
+        vim_col = [c for c in vtx.columns if "VTXM" in c or "VTXm" in c]
+
+        if not vip_col or not vim_col:
+            if len(vtx.columns) >= 2:
+                vip_col = [vtx.columns[0]]
+                vim_col = [vtx.columns[1]]
+            else:
+                return IndicatorResult("Vortex", "neutral", 0.0, 0.0, "컬럼 없음")
+
+        vip = vtx[vip_col[0]].dropna()
+        vim = vtx[vim_col[0]].dropna()
+
+        if len(vip) < 2 or len(vim) < 2:
+            return IndicatorResult("Vortex", "neutral", 0.0, 0.0, "데이터 부족")
+
+        curr_p = float(vip.iloc[-1])
+        prev_p = float(vip.iloc[-2])
+        curr_m = float(vim.iloc[-1])
+        prev_m = float(vim.iloc[-2])
+
+        # 크로스 감지
+        if prev_p <= prev_m and curr_p > curr_m:
+            return IndicatorResult("Vortex", "long", 0.7, curr_p,
+                                   f"VI+ 상향 크로스 (VI+={curr_p:.3f} > VI-={curr_m:.3f})")
+        elif prev_p >= prev_m and curr_p < curr_m:
+            return IndicatorResult("Vortex", "short", 0.7, curr_m,
+                                   f"VI- 상향 크로스 (VI-={curr_m:.3f} > VI+={curr_p:.3f})")
+        elif curr_p > curr_m:
+            diff = abs(curr_p - curr_m)
+            strength = min(diff * 5, 0.5)
+            return IndicatorResult("Vortex", "long", strength, curr_p,
+                                   f"VI+ > VI- ({curr_p:.3f} vs {curr_m:.3f}) — 상승 추세")
+        elif curr_m > curr_p:
+            diff = abs(curr_m - curr_p)
+            strength = min(diff * 5, 0.5)
+            return IndicatorResult("Vortex", "short", strength, curr_m,
+                                   f"VI- > VI+ ({curr_m:.3f} vs {curr_p:.3f}) — 하락 추세")
+
+        return IndicatorResult("Vortex", "neutral", 0.0, curr_p, "Vortex 중립")
+    except Exception as e:
+        logger.error("Vortex 분석 오류: %s", e, exc_info=True)
+        return IndicatorResult("Vortex", "neutral", 0.0, 0.0, "분석 오류")

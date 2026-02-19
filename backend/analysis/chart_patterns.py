@@ -94,7 +94,8 @@ def _geometry_score(
 def _volume_confirmation(df: pd.DataFrame, breakout_idx: int = -1, lookback: int = 20) -> float:
     """
     돌파 시점의 거래량 확인 (0.0 ~ 1.0)
-    2x 이상 → 1.0, 1.2x → 0.5, 평균 이하 → 0.0~0.5
+    3x 이상 → 1.0, 2x → 0.85, 1.5x → 0.7, 1.2x → 0.55,
+    평균 → 0.4, 0.5x 미만 → 0.1 (매우 약한 확인)
     """
     if "volume" not in df.columns or len(df) < lookback + 2:
         return 0.5
@@ -113,12 +114,20 @@ def _volume_confirmation(df: pd.DataFrame, breakout_idx: int = -1, lookback: int
 
     ratio = current_vol / avg_vol
 
-    if ratio >= 2.0:
+    if ratio >= 3.0:
         return 1.0
+    elif ratio >= 2.0:
+        return 0.85 + (ratio - 2.0) / 1.0 * 0.15
+    elif ratio >= 1.5:
+        return 0.7 + (ratio - 1.5) / 0.5 * 0.15
     elif ratio >= 1.2:
-        return 0.5 + (ratio - 1.2) / 0.8 * 0.5
+        return 0.55 + (ratio - 1.2) / 0.3 * 0.15
+    elif ratio >= 1.0:
+        return 0.4 + (ratio - 1.0) / 0.2 * 0.15
+    elif ratio >= 0.5:
+        return 0.1 + (ratio - 0.5) / 0.5 * 0.3
     else:
-        return max(0.0, ratio / 1.2 * 0.5)
+        return 0.1  # 거래량 매우 부족: 패턴 신뢰도 크게 감소
 
 
 def _calc_strength(geo_score: float, vol_factor: float) -> float:

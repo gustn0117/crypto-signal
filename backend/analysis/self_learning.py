@@ -38,6 +38,11 @@ MAX_SIGNALS = 20000
 # 시간 감쇠 반감기 (일)
 TIME_DECAY_HALF_LIFE_DAYS = 30
 
+# 롤링 윈도우 설정 (일)
+ROLLING_WINDOW_DAYS = 90  # 메인 윈도우: 최근 90일
+ROLLING_WINDOW_SHORT_DAYS = 30  # 단기 윈도우: 최근 30일 (가중치 높음)
+SHORT_WINDOW_WEIGHT = 1.5  # 단기 윈도우 데이터에 대한 추가 가중치
+
 # 성공 결과 분류 및 점수
 SUCCESS_RESULTS = {"HIT_TP1", "HIT_TP2", "HIT_TP3", "PARTIAL"}
 FAILURE_RESULTS = {"HIT_SL", "WRONG"}
@@ -145,11 +150,16 @@ class SelfLearningEngine:
     # ─── 내부 메서드 ──────────────────────────────────────
 
     async def _get_verified_predictions(self) -> list[dict]:
-        """검증 완료된 예측 조회 (대용량 활용)."""
+        """검증 완료된 예측 조회 (롤링 윈도우 적용).
+        최근 ROLLING_WINDOW_DAYS 이내의 데이터만 사용.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=ROLLING_WINDOW_DAYS)).isoformat()
         resp = (
             await self._table("predictions")
             .select("symbol,timeframe,signal_direction,result,regime,created_at")
             .eq("status", "VERIFIED")
+            .gte("created_at", cutoff)
             .order("created_at", desc=True)
             .limit(MAX_PREDICTIONS)
             .execute()
@@ -157,10 +167,13 @@ class SelfLearningEngine:
         return resp.data
 
     async def _get_recent_signals(self) -> list[dict]:
-        """최근 시그널 조회 (대용량 활용)."""
+        """최근 시그널 조회 (롤링 윈도우 적용)."""
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=ROLLING_WINDOW_DAYS)).isoformat()
         resp = (
             await self._table("signals")
             .select("symbol,timeframe,signal,indicators,candle_patterns,chart_patterns,volume_signals,futures_signals,created_at")
+            .gte("created_at", cutoff)
             .order("created_at", desc=True)
             .limit(MAX_SIGNALS)
             .execute()
@@ -238,13 +251,19 @@ class SelfLearningEngine:
         return accuracy
 
     def _time_decay_weight(self, created_at: str | None, now: datetime) -> float:
-        """시간 감쇠 가중치 계산 (반감기 30일)."""
+        """시간 감쇠 가중치 계산 (반감기 30일 + 단기 윈도우 부스트).
+        최근 ROLLING_WINDOW_SHORT_DAYS 이내 데이터에 SHORT_WINDOW_WEIGHT 배 가중.
+        """
         if not created_at:
             return 0.5
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             days_ago = (now - dt).total_seconds() / 86400
-            return math.exp(-0.693 * days_ago / TIME_DECAY_HALF_LIFE_DAYS)
+            base_weight = math.exp(-0.693 * days_ago / TIME_DECAY_HALF_LIFE_DAYS)
+            # 단기 윈도우 부스트: 최근 30일 데이터는 추가 가중
+            if days_ago <= ROLLING_WINDOW_SHORT_DAYS:
+                base_weight *= SHORT_WINDOW_WEIGHT
+            return base_weight
         except Exception:
             return 0.5
 

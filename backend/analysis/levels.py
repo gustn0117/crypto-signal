@@ -1,11 +1,12 @@
 """
 가격 레벨 분석 모듈
-ATR, 지지/저항선, 최근 고저점 계산
+ATR, 지지/저항선, Pivot Points, Fibonacci 되돌림 계산
 """
 import logging
+import numpy as np
 import pandas as pd
 import pandas_ta as ta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,58 @@ class PriceLevels:
     resistance_levels: List[float]  # 가까운 저항선 (최대 3개, 가격 오름차순)
     recent_high: float              # 20봉 최고가
     recent_low: float               # 20봉 최저가
+    pivot_levels: dict = field(default_factory=dict)        # {"P": ..., "R1": ..., "S1": ..., "R2": ..., "S2": ...}
+    fibonacci_levels: List[float] = field(default_factory=list)  # 0.236, 0.382, 0.500, 0.618, 0.786
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _calc_pivot_points(df: pd.DataFrame) -> dict:
+    """직전 완성 봉의 HLC를 사용한 전통적 Pivot Points 계산.
+    Returns: {"P": float, "R1": float, "S1": float, "R2": float, "S2": float}
+    """
+    if len(df) < 2:
+        return {}
+    prev = df.iloc[-2]  # 직전 완성 봉
+    h, l, c = float(prev["high"]), float(prev["low"]), float(prev["close"])
+    p = (h + l + c) / 3
+    return {
+        "P": round(p, 6),
+        "R1": round(2 * p - l, 6),
+        "S1": round(2 * p - h, 6),
+        "R2": round(p + (h - l), 6),
+        "S2": round(p - (h - l), 6),
+    }
+
+
+def _calc_fibonacci_levels(df: pd.DataFrame, lookback: int = 50) -> List[float]:
+    """최근 주요 스윙(고점~저점) 사이 Fibonacci 되돌림 레벨 계산.
+    상승 추세면 저점 기준 상방, 하락 추세면 고점 기준 하방으로 계산.
+    """
+    if len(df) < lookback:
+        data = df
+    else:
+        data = df.tail(lookback)
+
+    swing_high = float(data["high"].max())
+    swing_low = float(data["low"].min())
+    price_range = swing_high - swing_low
+
+    if price_range <= 0:
+        return []
+
+    current_price = float(df["close"].iloc[-1])
+    ratios = [0.236, 0.382, 0.500, 0.618, 0.786]
+
+    # 현재가가 중간 이상 → 상승 추세 가정 (저점 기준 되돌림)
+    mid = swing_low + price_range * 0.5
+    if current_price >= mid:
+        levels = [round(swing_high - price_range * r, 6) for r in ratios]
+    else:
+        levels = [round(swing_low + price_range * r, 6) for r in ratios]
+
+    return levels
 
 
 def _find_swing_points(df: pd.DataFrame, lookback: int = 100, window: int = 2) -> tuple[List[float], List[float]]:
@@ -97,6 +147,28 @@ def calculate_levels(df: pd.DataFrame) -> PriceLevels:
         if not support_levels:
             support_levels = [recent_low]
 
+        # Pivot Points
+        pivot_levels = _calc_pivot_points(df)
+
+        # Fibonacci 되돌림
+        fibonacci_levels = _calc_fibonacci_levels(df)
+
+        # Pivot/Fibonacci 레벨을 지지/저항에 병합 (현재가 기준 분류)
+        extra_levels = fibonacci_levels[:]
+        for key in ("R1", "R2", "S1", "S2"):
+            if key in pivot_levels:
+                extra_levels.append(pivot_levels[key])
+
+        for lv in extra_levels:
+            if lv > current_price and lv not in resistance_levels:
+                resistance_levels.append(lv)
+            elif lv < current_price and lv not in support_levels:
+                support_levels.append(lv)
+
+        # 재정렬 후 상위 5개만
+        resistance_levels = sorted(resistance_levels)[:5]
+        support_levels = sorted(support_levels, reverse=True)[:5]
+
         return PriceLevels(
             atr=round(atr, 6),
             atr_percent=round(atr_percent, 2),
@@ -104,6 +176,8 @@ def calculate_levels(df: pd.DataFrame) -> PriceLevels:
             resistance_levels=[round(r, 6) for r in resistance_levels],
             recent_high=round(recent_high, 6),
             recent_low=round(recent_low, 6),
+            pivot_levels=pivot_levels,
+            fibonacci_levels=fibonacci_levels,
         )
     except Exception as e:
         logger.error("가격 레벨 계산 오류: %s", e, exc_info=True)

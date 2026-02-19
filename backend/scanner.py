@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+import math
 import uuid
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from signal_tracker import SignalTracker
 from config import (
     MARKET_CACHE_TTL, SCAN_CONCURRENCY, ANALYSIS_CANDLE_LIMIT,
     SCAN_SYMBOLS, DYNAMIC_SYMBOLS, SCAN_TOP_N, SCALP_SYMBOLS_LIMIT,
+    MIN_VOLUME_USDT, VOLUME_SPIKE_THRESHOLD, VOLUME_SPIKE_PRIORITY_COUNT,
 )
 from analysis.indicators import TF_CATEGORY
 
@@ -28,13 +30,17 @@ class MarketScanner:
     def __init__(self, client: AsyncBinanceClient,
                  candle_repo: CandleRepo,
                  signal_repo: SignalRepo,
-                 track_repo: SignalTrackRepo = None):
+                 track_repo: SignalTrackRepo = None,
+                 ticker_cache_getter=None,
+                 correlation_analyzer=None):
         self.client = client
         self.engine = SignalEngine()
         self.collector = DataCollector(client, candle_repo)
         self.candle_repo = candle_repo
         self.signal_repo = signal_repo
         self.track_repo = track_repo
+        self._ticker_cache_getter = ticker_cache_getter
+        self.correlation = correlation_analyzer
 
         # 시그널 트래커 (점진적 확인)
         self.tracker = SignalTracker(track_repo) if track_repo else None
@@ -73,32 +79,79 @@ class MarketScanner:
         self._markets_cached_at = now
         return self._cached_markets
 
+    def _find_volume_spikes(self) -> List[str]:
+        """티커 캐시에서 거래량 급증 코인 탐지."""
+        if not self._ticker_cache_getter:
+            return []
+
+        try:
+            ticker_cache = self._ticker_cache_getter()
+            if not ticker_cache:
+                return []
+
+            existing = set(SCAN_SYMBOLS)
+            candidates = []
+
+            for symbol, ticker in ticker_cache.items():
+                if not symbol.endswith("/USDT") or symbol in existing:
+                    continue
+
+                change_24h = abs(ticker.get("percentage", 0) or 0)
+                quote_vol = ticker.get("quoteVolume", 0) or 0
+
+                # 조건: |변동률| > 5% + 거래량 > MIN_VOLUME_USDT * VOLUME_SPIKE_THRESHOLD
+                if change_24h > 5.0 and quote_vol > MIN_VOLUME_USDT * VOLUME_SPIKE_THRESHOLD:
+                    # 복합 점수: 변동률 × log(거래량 비율)
+                    vol_ratio = quote_vol / (MIN_VOLUME_USDT * VOLUME_SPIKE_THRESHOLD)
+                    score = change_24h * math.log1p(vol_ratio)
+                    candidates.append((symbol, score))
+
+            # 점수 기준 상위 N개
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            spikes = [sym for sym, _ in candidates[:VOLUME_SPIKE_PRIORITY_COUNT]]
+
+            if spikes:
+                logger.info("거래량 급증 코인 감지: %s", spikes)
+
+            return spikes
+        except Exception as e:
+            logger.warning("거래량 급증 감지 실패: %s", e)
+            return []
+
     async def _get_scan_symbols(self) -> List[str]:
-        """스캔 대상 심볼 결정 (고정 + 동적)"""
+        """스캔 대상 심볼 결정 (고정 + 동적 + 거래량 급증)"""
+        # 거래량 급증 코인 탐지 (항상 실행)
+        spike_symbols = self._find_volume_spikes()
+
         if not DYNAMIC_SYMBOLS:
-            return SCAN_SYMBOLS
+            # 고정 목록 + 급증 코인
+            all_symbols = list(dict.fromkeys(spike_symbols + SCAN_SYMBOLS))
+            return all_symbols
 
         now = datetime.now(timezone.utc)
         # 5분 TTL로 동적 심볼 캐싱
         if (self._dynamic_symbols
                 and self._dynamic_symbols_at
                 and (now - self._dynamic_symbols_at).total_seconds() < 300):
-            return self._dynamic_symbols
+            # 급증 코인을 앞에 삽입
+            all_symbols = list(dict.fromkeys(spike_symbols + self._dynamic_symbols))
+            return all_symbols
 
         try:
             markets = await self._get_markets()
             # 거래량 기준 이미 정렬됨, Top N 선택
             top_symbols = [m["symbol"] for m in markets[:SCAN_TOP_N]]
 
-            # 고정 심볼은 항상 포함 (합집합)
-            all_symbols = list(dict.fromkeys(SCAN_SYMBOLS + top_symbols))
+            # 급증 + 고정 + 동적 (합집합, 급증 우선)
+            all_symbols = list(dict.fromkeys(spike_symbols + SCAN_SYMBOLS + top_symbols))
             self._dynamic_symbols = all_symbols
             self._dynamic_symbols_at = now
-            logger.info("동적 심볼 갱신: %d개 (고정 %d + 동적 Top %d)", len(all_symbols), len(SCAN_SYMBOLS), SCAN_TOP_N)
+            logger.info("동적 심볼 갱신: %d개 (급증 %d + 고정 %d + 동적 Top %d)",
+                        len(all_symbols), len(spike_symbols), len(SCAN_SYMBOLS), SCAN_TOP_N)
             return all_symbols
         except Exception as e:
             logger.warning("동적 심볼 조회 실패, 고정 리스트 사용: %s", e)
-            return SCAN_SYMBOLS
+            return list(dict.fromkeys(spike_symbols + SCAN_SYMBOLS))
 
     def _get_cached_candle(self, symbol: str, timeframe: str):
         """캔들 캐시 조회 (TTL 확인)"""
@@ -148,6 +201,9 @@ class MarketScanner:
         all_results: dict[str, dict] = {}
         lock = asyncio.Lock()
 
+        from analysis.mtf import HIGHER_TF_MAP as MTF_MAP1, SECOND_HIGHER_TF_MAP as MTF_MAP2
+        from config import REALTIME_HIGHER_TF_LIMIT
+
         async def _analyze_one(symbol: str):
             async with semaphore:
                 try:
@@ -161,9 +217,42 @@ class MarketScanner:
 
                     if len(df) < 50:
                         return
-                    signal = self.engine.analyze(df, symbol, timeframe)
+
+                    # 2단계 상위 TF 캔들 조회
+                    higher_tf_dfs = {}
+                    htf1 = MTF_MAP1.get(timeframe, timeframe)
+                    htf2 = MTF_MAP2.get(timeframe, timeframe)
+                    for htf in set([htf1, htf2]) - {timeframe}:
+                        htf_df = self._get_cached_candle(symbol, htf)
+                        if htf_df is None:
+                            htf_df = await self.candle_repo.get_candles(
+                                symbol, htf, limit=REALTIME_HIGHER_TF_LIMIT
+                            )
+                            if htf_df is not None and len(htf_df) > 0:
+                                self._set_cached_candle(symbol, htf, htf_df)
+                        if htf_df is not None and len(htf_df) >= 50:
+                            higher_tf_dfs[htf] = htf_df
+
+                    signal = self.engine.analyze(
+                        df, symbol, timeframe,
+                        higher_tf_dfs=higher_tf_dfs if higher_tf_dfs else None,
+                    )
+                    result = signal.to_dict()
+
+                    # 상관관계 기반 보정 (BTC 베타)
+                    if self.correlation and symbol != "BTC/USDT":
+                        beta = self.correlation.get_beta(symbol)
+                        btc_mod = self.correlation.get_btc_confidence_modifier(
+                            symbol, result.get("signal", "NEUTRAL")
+                        )
+                        if btc_mod != 0.0:
+                            old_conf = result.get("confidence", 0)
+                            result["confidence"] = max(0.0, min(1.0, old_conf + btc_mod))
+                        if beta is not None:
+                            result["btc_beta"] = beta
+
                     async with lock:
-                        all_results[symbol] = signal.to_dict()
+                        all_results[symbol] = result
                 except Exception as e:
                     logger.warning(f"{symbol} 분석 실패: {e}")
 

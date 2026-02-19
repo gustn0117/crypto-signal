@@ -106,30 +106,74 @@ def _analyze_obv(df: pd.DataFrame) -> VolumeResult | None:
 
 
 def _detect_price_volume_divergence(df: pd.DataFrame, lookback: int = 5) -> VolumeResult | None:
-    """가격-거래량 다이버전스 감지"""
-    if len(df) < lookback + 1:
+    """가격-거래량 다이버전스 감지 (다중 확인: 기본 + 다중 바 + OBV)"""
+    if len(df) < max(lookback + 1, 20):
         return None
 
     recent = df.iloc[-lookback:]
     price_change = (recent["close"].iloc[-1] - recent["close"].iloc[0]) / recent["close"].iloc[0]
     vol_change = (recent["volume"].iloc[-1] - recent["volume"].iloc[0]) / (recent["volume"].iloc[0] + 1e-10)
 
-    if price_change > 0.02 and vol_change < -0.3:
+    # 1) 다중 바 다이버전스: 개별 봉에서 가격↑+거래량↓ 패턴 카운트
+    bar_div_count = 0
+    for i in range(1, len(recent)):
+        p_up = recent["close"].iloc[i] > recent["close"].iloc[i - 1]
+        v_down = recent["volume"].iloc[i] < recent["volume"].iloc[i - 1]
+        p_down = recent["close"].iloc[i] < recent["close"].iloc[i - 1]
+        if p_up and v_down:
+            bar_div_count += 1  # 베어리시 다이버전스 봉
+        elif p_down and v_down:
+            bar_div_count -= 1  # 불리시 다이버전스 봉
+    multi_bar_confirmed = abs(bar_div_count) >= 3
+
+    # 2) OBV 다이버전스: 가격과 OBV 방향 불일치
+    obv = ta.obv(df["close"], df["volume"])
+    obv_divergence = False
+    if obv is not None and len(obv) >= lookback:
+        obv_recent = obv.iloc[-lookback:]
+        obv_slope = float(obv_recent.iloc[-1]) - float(obv_recent.iloc[0])
+        if price_change > 0.01 and obv_slope < 0:
+            obv_divergence = True
+        elif price_change < -0.01 and obv_slope > 0:
+            obv_divergence = True
+
+    # 3) 복합 점수 산출
+    confirmation_count = 0
+    base_strength = 0.55
+
+    original_bearish = price_change > 0.015 and vol_change < -0.25
+    original_bullish = price_change < -0.015 and vol_change < -0.25
+
+    if original_bearish or original_bullish:
+        confirmation_count += 1
+    if multi_bar_confirmed:
+        confirmation_count += 1
+        base_strength += 0.10
+    if obv_divergence:
+        confirmation_count += 1
+        base_strength += 0.10
+
+    if confirmation_count == 0:
+        return None
+
+    strength = min(base_strength, 0.90)
+
+    if price_change > 0.015 and (vol_change < -0.25 or bar_div_count >= 3 or obv_divergence):
         return VolumeResult(
             name="거래량 다이버전스",
             signal="short",
-            strength=0.65,
+            strength=strength,
             value=vol_change,
-            description=f"가격 상승({price_change:.1%}) but 거래량 감소({vol_change:.1%}) - 상승 약화"
+            description=f"가격 상승({price_change:.1%}) + 거래량/OBV 이탈 (확인 {confirmation_count}개) - 상승 약화"
         )
 
-    if price_change < -0.02 and vol_change < -0.3:
+    if price_change < -0.015 and (vol_change < -0.25 or bar_div_count <= -3 or obv_divergence):
         return VolumeResult(
             name="거래량 다이버전스",
             signal="long",
-            strength=0.65,
+            strength=strength,
             value=vol_change,
-            description=f"가격 하락({price_change:.1%}) + 거래량 감소({vol_change:.1%}) - 하락 약화"
+            description=f"가격 하락({price_change:.1%}) + 거래량/OBV 이탈 (확인 {confirmation_count}개) - 하락 약화"
         )
 
     return None

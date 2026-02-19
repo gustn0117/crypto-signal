@@ -949,9 +949,11 @@ async def lifespan(app: FastAPI):
     backtest_engine = BacktestEngine(database.client, SUPABASE_SCHEMA)
     logger.info("Supabase 데이터베이스 연결 완료")
 
-    # 스캐너 생성
-    scanner = MarketScanner(async_client, candle_repo, signal_repo, track_repo)
+    # 스캐너 생성 (티커 캐시 연동으로 거래량 급증 감지)
     correlation_analyzer = CorrelationAnalyzer(candle_repo)
+    scanner = MarketScanner(async_client, candle_repo, signal_repo, track_repo,
+                            ticker_cache_getter=lambda: _ticker_cache,
+                            correlation_analyzer=correlation_analyzer)
 
     # 학습 가중치 로드
     try:

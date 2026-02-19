@@ -16,6 +16,12 @@ HIGHER_TF_MAP = {
     "30m": "4h", "1h": "4h", "4h": "1d", "1d": "1d",
 }
 
+# 2단계 상위 TF 매핑 (한 단계 더 위)
+SECOND_HIGHER_TF_MAP = {
+    "1m": "15m", "5m": "1h", "15m": "4h",
+    "30m": "1d", "1h": "1d", "4h": "1d", "1d": "1d",
+}
+
 
 @dataclass
 class MTFConfirmation:
@@ -36,11 +42,19 @@ def check_higher_tf(
     higher_tf: str = "",
 ) -> Optional[MTFConfirmation]:
     """
-    상위 타임프레임 추세 확인
+    상위 타임프레임 추세 확인 (MACD + ADX + EMA 기반)
 
     방법:
-    1. EMA(21) 방향: 현재 EMA > 이전 EMA → bullish
-    2. 가격 위치: 종가가 EMA(50) 위 → bullish
+    1. MACD 히스토그램 방향 → 추세 방향 (주)
+    2. ADX > 25 → 강한 추세 여부
+    3. DI+/DI- 비교 → 보조 방향
+    4. EMA(21) 기울기 → 보조 확인
+
+    보정값:
+    - 정렬 + 강한 추세(ADX>25): +0.20
+    - 정렬 + 약한 추세(ADX<25): +0.10
+    - 반대 + 강한 추세: -0.25
+    - 반대 + 약한 추세: -0.15
 
     signal_direction: "long" 또는 "short" (현재 TF의 시그널 방향)
     """
@@ -49,52 +63,98 @@ def check_higher_tf(
 
     try:
         close = higher_tf_df["close"]
+        high = higher_tf_df["high"]
+        low = higher_tf_df["low"]
 
-        # EMA(21) 추세 방향
+        # 1) MACD 히스토그램 방향
+        macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+        if macd_df is None or macd_df.empty:
+            return None
+
+        histogram = macd_df.iloc[:, 2]
+        hist_vals = histogram.dropna()
+        if len(hist_vals) < 2:
+            return None
+
+        macd_bullish = float(hist_vals.iloc[-1]) > 0
+
+        # 2) ADX + DI+/DI-
+        adx_df = ta.adx(high, low, close, length=14)
+        strong_trend = False
+        di_bullish = None
+
+        if adx_df is not None and not adx_df.empty:
+            adx_col = [c for c in adx_df.columns if "ADX" in c and "DM" not in c]
+            dmp_col = [c for c in adx_df.columns if "DMP" in c]
+            dmn_col = [c for c in adx_df.columns if "DMN" in c]
+
+            if adx_col and dmp_col and dmn_col:
+                adx_val = float(adx_df[adx_col[0]].dropna().iloc[-1])
+                dmp = float(adx_df[dmp_col[0]].dropna().iloc[-1])
+                dmn = float(adx_df[dmn_col[0]].dropna().iloc[-1])
+                strong_trend = adx_val > 25
+                di_bullish = dmp > dmn
+
+        # 3) EMA(21) 기울기 (보조)
         ema21 = ta.ema(close, length=21)
-        if ema21 is None or len(ema21) < 2:
-            return None
+        ema_rising = None
+        if ema21 is not None and len(ema21.dropna()) >= 4:
+            ema_rising = float(ema21.iloc[-1]) > float(ema21.iloc[-3])
 
-        ema21_rising = ema21.iloc[-1] > ema21.iloc[-3] if len(ema21) >= 4 else ema21.iloc[-1] > ema21.iloc[-2]
+        # 종합 추세 판단: MACD(주) + DI(보조) + EMA(보조)
+        bullish_votes = 0
+        bearish_votes = 0
 
-        # EMA(50) 대비 가격 위치
-        ema50 = ta.ema(close, length=50)
-        if ema50 is None or pd.isna(ema50.iloc[-1]):
-            return None
+        # MACD (가중치 2)
+        if macd_bullish:
+            bullish_votes += 2
+        else:
+            bearish_votes += 2
 
-        price_above_ema50 = close.iloc[-1] > ema50.iloc[-1]
+        # DI (가중치 1)
+        if di_bullish is True:
+            bullish_votes += 1
+        elif di_bullish is False:
+            bearish_votes += 1
 
-        # 추세 판단
-        if ema21_rising and price_above_ema50:
+        # EMA (가중치 1)
+        if ema_rising is True:
+            bullish_votes += 1
+        elif ema_rising is False:
+            bearish_votes += 1
+
+        if bullish_votes > bearish_votes:
             trend = "bullish"
             trend_desc = "상승 추세"
-        elif not ema21_rising and not price_above_ema50:
+        elif bearish_votes > bullish_votes:
             trend = "bearish"
             trend_desc = "하락 추세"
         else:
             trend = "neutral"
             trend_desc = "횡보"
 
-        # 정렬 판단
+        # 정렬 판단 + 차등 보정
         is_long_signal = signal_direction in ("long", "LONG", "STRONG_LONG")
         is_short_signal = signal_direction in ("short", "SHORT", "STRONG_SHORT")
 
+        adx_info = f"ADX {'강' if strong_trend else '약'}"
+
         if trend == "bullish" and is_long_signal:
             alignment = "aligned"
-            modifier = 0.15
-            desc = f"{higher_tf} {trend_desc} - 롱 시그널과 정렬 (신뢰도 +15%)"
+            modifier = 0.20 if strong_trend else 0.10
+            desc = f"{higher_tf} {trend_desc}({adx_info}) - 롱과 정렬 (신뢰도 +{modifier:.0%})"
         elif trend == "bearish" and is_short_signal:
             alignment = "aligned"
-            modifier = 0.15
-            desc = f"{higher_tf} {trend_desc} - 숏 시그널과 정렬 (신뢰도 +15%)"
+            modifier = 0.20 if strong_trend else 0.10
+            desc = f"{higher_tf} {trend_desc}({adx_info}) - 숏과 정렬 (신뢰도 +{modifier:.0%})"
         elif trend == "bullish" and is_short_signal:
             alignment = "opposed"
-            modifier = -0.2
-            desc = f"{higher_tf} {trend_desc} - 숏 시그널과 반대 (신뢰도 -20%)"
+            modifier = -0.25 if strong_trend else -0.15
+            desc = f"{higher_tf} {trend_desc}({adx_info}) - 숏과 반대 (신뢰도 {modifier:+.0%})"
         elif trend == "bearish" and is_long_signal:
             alignment = "opposed"
-            modifier = -0.2
-            desc = f"{higher_tf} {trend_desc} - 롱 시그널과 반대 (신뢰도 -20%)"
+            modifier = -0.25 if strong_trend else -0.15
+            desc = f"{higher_tf} {trend_desc}({adx_info}) - 롱과 반대 (신뢰도 {modifier:+.0%})"
         else:
             alignment = "neutral"
             modifier = 0.0
@@ -110,3 +170,43 @@ def check_higher_tf(
     except Exception as e:
         logger.error("MTF 분석 오류: %s", e, exc_info=True)
         return None
+
+
+def check_multi_tf(
+    higher_tf_df: Optional[pd.DataFrame],
+    second_tf_df: Optional[pd.DataFrame],
+    signal_direction: str,
+    higher_tf: str = "",
+    second_tf: str = "",
+) -> Optional[MTFConfirmation]:
+    """
+    2단계 멀티 타임프레임 확인.
+    1차 상위 TF (가중치 1.0) + 2차 상위 TF (가중치 0.5) 합산.
+    최대 보정값: ±0.30
+    """
+    result1 = check_higher_tf(higher_tf_df, signal_direction, higher_tf)
+    result2 = check_higher_tf(second_tf_df, signal_direction, second_tf)
+
+    if result1 is None and result2 is None:
+        return None
+
+    mod1 = result1.confidence_modifier if result1 else 0.0
+    mod2 = (result2.confidence_modifier * 0.5) if result2 else 0.0
+    total_mod = max(-0.30, min(0.30, mod1 + mod2))
+
+    # 기본 결과는 1차 상위 TF 기준, 없으면 2차
+    base = result1 or result2
+    desc_parts = []
+    if result1:
+        desc_parts.append(f"1차({higher_tf}): {result1.alignment}")
+    if result2:
+        desc_parts.append(f"2차({second_tf}): {result2.alignment}")
+    desc = f"멀티TF [{', '.join(desc_parts)}] 보정={total_mod:+.2f}"
+
+    return MTFConfirmation(
+        higher_tf=base.higher_tf,
+        higher_tf_trend=base.higher_tf_trend,
+        alignment=base.alignment,
+        confidence_modifier=total_mod,
+        description=desc,
+    )

@@ -20,6 +20,10 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", 15))
 DYNAMIC_SYMBOLS = os.getenv("DYNAMIC_SYMBOLS", "false").lower() == "true"
 SCAN_TOP_N = int(os.getenv("SCAN_TOP_N", 0))
 
+# 거래량 급증 감지 설정
+VOLUME_SPIKE_THRESHOLD = float(os.getenv("VOLUME_SPIKE_THRESHOLD", "2.0"))  # 거래량 급증 기준 배율
+VOLUME_SPIKE_PRIORITY_COUNT = int(os.getenv("VOLUME_SPIKE_PRIORITY_COUNT", "5"))  # 급증 코인 최대 추가 수
+
 # 고정 스캔 대상 (항상 포함되는 코어 코인)
 SCAN_SYMBOLS = [
     "BTC/USDT",
