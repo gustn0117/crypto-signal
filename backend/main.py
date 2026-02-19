@@ -1252,6 +1252,12 @@ async def get_symbol_beta(symbol: str):
 
 # ─── 예측 API ──────────────────────────────────────────
 
+@app.post("/api/predictions/expire-all")
+async def expire_all_predictions():
+    count = await prediction_repo.expire_all_predictions()
+    return {"success": True, "expired_count": count}
+
+
 @app.post("/api/predictions/{symbol}")
 async def create_prediction(
     symbol: str,
@@ -1445,12 +1451,6 @@ async def expire_prediction(prediction_id: int):
     if not ok:
         raise HTTPException(status_code=500, detail="만료 처리 실패")
     return {"success": True, "prediction_id": prediction_id}
-
-
-@app.post("/api/predictions/expire-all")
-async def expire_all_predictions():
-    count = await prediction_repo.expire_all_predictions()
-    return {"success": True, "expired_count": count}
 
 
 # ─── 알림 API (DB 기반) ──────────────────────────────────
