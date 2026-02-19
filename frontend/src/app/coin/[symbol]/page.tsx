@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useCoinDetail } from "@/hooks/useCoinDetail";
 import { useWS } from "@/components/ClientLayout";
@@ -28,7 +28,9 @@ import { ArrowLeft, RefreshCw, TrendingUp, Clock, CheckCircle } from "lucide-rea
 
 export default function CoinDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const symbol = (params.symbol as string) || "";
+  const initialTf = searchParams.get("tf") || "1h";
 
   const {
     signal,
@@ -40,7 +42,7 @@ export default function CoinDetailPage() {
     lastRefresh,
     changeTimeframe,
     refresh,
-  } = useCoinDetail(symbol);
+  } = useCoinDetail(symbol, initialTf);
 
   const {
     predictionCreated,
@@ -115,7 +117,7 @@ export default function CoinDetailPage() {
             <ArrowLeft size={18} />
           </Link>
           <h2 className="text-lg font-semibold text-heading">{displaySymbol}</h2>
-          <CoinSearch currentSymbol={symbol} />
+          <CoinSearch currentSymbol={symbol} timeframe={timeframe} />
         </div>
         <div className="flex items-center gap-3">
           <TimeframeSelector selected={timeframe} onChange={changeTimeframe} />

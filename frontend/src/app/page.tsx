@@ -148,7 +148,7 @@ export default function Dashboard() {
               <div className="flex items-center justify-between mb-3">
                 <span className="text-sm font-medium text-heading">{selectedSymbol}</span>
                 <Link
-                  href={`/coin/${selectedSymbol.replace("/", "")}`}
+                  href={`/coin/${selectedSymbol.replace("/", "")}?tf=${timeframe}`}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-card text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 transition-colors"
                 >
                   상세 분석

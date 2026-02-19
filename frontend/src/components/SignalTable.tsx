@@ -215,7 +215,7 @@ export default function SignalTable({ signals, onSelect, selectedSymbol }: Signa
                   </td>
                   <td className="px-2 py-3 hidden sm:table-cell">
                     <Link
-                      href={`/coin/${sig.symbol.replace("/", "")}`}
+                      href={`/coin/${sig.symbol.replace("/", "")}?tf=${sig.timeframe || "1h"}`}
                       className="inline-flex items-center gap-1 px-2 py-1 rounded-card text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 transition-colors"
                       onClick={(e) => e.stopPropagation()}
                     >

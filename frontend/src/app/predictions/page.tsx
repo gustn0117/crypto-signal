@@ -292,7 +292,7 @@ function ActivePredictionCard({ prediction, onExpire }: { prediction: Prediction
 
   return (
     <Link
-      href={`/coin/${prediction.symbol.replace("/", "")}`}
+      href={`/coin/${prediction.symbol.replace("/", "")}?tf=${prediction.timeframe}`}
       className="cd-card p-0 overflow-hidden hover:border-primary/30 transition-colors block"
     >
       {/* 헤더: 심볼 + 방향 + 초기화 + 신뢰도 */}
@@ -527,7 +527,7 @@ function HistoryRow({ prediction }: { prediction: Prediction }) {
       </td>
       <td className="px-4 py-2.5">
         <Link
-          href={`/coin/${prediction.symbol.replace("/", "")}`}
+          href={`/coin/${prediction.symbol.replace("/", "")}?tf=${prediction.timeframe}`}
           className="text-heading font-medium hover:text-primary transition-colors"
         >
           {symbolShort}

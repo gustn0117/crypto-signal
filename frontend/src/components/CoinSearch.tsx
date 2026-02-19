@@ -8,9 +8,10 @@ import { useRouter } from "next/navigation";
 
 interface CoinSearchProps {
   currentSymbol?: string;
+  timeframe?: string;
 }
 
-export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
+export default function CoinSearch({ currentSymbol, timeframe }: CoinSearchProps) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -58,7 +59,8 @@ export default function CoinSearch({ currentSymbol }: CoinSearchProps) {
   const handleSelect = useCallback(
     (symbol: string) => {
       const urlSymbol = symbol.replace("/", "");
-      router.push(`/coin/${urlSymbol}`);
+      const tfParam = timeframe ? `?tf=${timeframe}` : "";
+      router.push(`/coin/${urlSymbol}${tfParam}`);
       setIsOpen(false);
       setQuery("");
       setActiveIndex(-1);
