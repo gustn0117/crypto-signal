@@ -276,6 +276,37 @@ export async function fetchOHLCV(
   return data.candles || [];
 }
 
+// ─── 지표 시계열 API ─────────────────────────────────────
+
+export interface IndicatorSeriesPoint {
+  time: number;
+  value: number;
+}
+
+export interface IndicatorSeriesData {
+  [seriesName: string]: IndicatorSeriesPoint[];
+}
+
+export interface IndicatorSeriesResponse {
+  symbol: string;
+  timeframe: string;
+  indicators: Record<string, IndicatorSeriesData>;
+}
+
+export async function fetchIndicatorSeries(
+  symbol: string,
+  timeframe: string = "1h",
+  indicators: string[] = ["ema", "bb"],
+  limit?: number
+): Promise<IndicatorSeriesResponse> {
+  if (!limit) limit = TF_DEFAULT_LIMIT[timeframe] || 500;
+  const encoded = encodeURIComponent(symbol.replace("/", ""));
+  const indParam = indicators.join(",");
+  return fetchWithError<IndicatorSeriesResponse>(
+    `${API_BASE}/api/indicators/${encoded}?timeframe=${timeframe}&indicators=${indParam}&limit=${limit}`
+  );
+}
+
 export async function scanMarket(
   timeframe: string = "1h",
   topN: number = 30

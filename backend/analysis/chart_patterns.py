@@ -1029,8 +1029,611 @@ def detect_triple_top_bottom(df: pd.DataFrame) -> Optional[ChartPatternResult]:
 
 # ─── 충돌 패턴 제거 ────────────────────────────────────
 
+# ─── 신규 패턴: Rectangle/Range ──────────────────────────
+
+def detect_rectangle(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """사각형(박스권): 수평 지지/저항에 2+ 터치"""
+    if len(df) < 40:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+
+    lookback = min(60, len(df))
+    recent_h = high[-lookback:]
+    recent_l = low[-lookback:]
+
+    swing_highs, swing_lows = _find_swings(close[-lookback:], order=2)
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return None
+
+    # 고점 클러스터링 (1.5% 이내)
+    h_prices = [float(recent_h[i]) for i in swing_highs]
+    l_prices = [float(recent_l[i]) for i in swing_lows]
+
+    avg_h = np.mean(h_prices)
+    avg_l = np.mean(l_prices)
+    if avg_l <= 0 or avg_h <= avg_l:
+        return None
+
+    h_spread = max(h_prices) - min(h_prices)
+    l_spread = max(l_prices) - min(l_prices)
+    range_height = avg_h - avg_l
+    range_pct = range_height / avg_l * 100
+
+    # 고점/저점이 각각 1.5% 이내에 클러스터
+    if h_spread / avg_h * 100 > 1.5 or l_spread / avg_l * 100 > 1.5:
+        return None
+
+    # 범위가 너무 좁거나 넓으면 제외
+    if range_pct < 1.0 or range_pct > 15.0:
+        return None
+
+    # 현재 가격 위치
+    curr = close[-1]
+    pos_in_range = (curr - avg_l) / range_height
+
+    vol = _volume_confirmation(df)
+    touch_count = len(swing_highs) + len(swing_lows)
+    geo = min(1.0, touch_count / 8)  # 터치 많을수록 신뢰
+    strength = _calc_strength(geo, vol)
+
+    if pos_in_range > 0.85:
+        return ChartPatternResult(
+            "사각형 (상단)", "short", strength,
+            f"박스권 상단 근접 ({range_pct:.1f}% 범위, {touch_count}회 터치)"
+        )
+    elif pos_in_range < 0.15:
+        return ChartPatternResult(
+            "사각형 (하단)", "long", strength,
+            f"박스권 하단 근접 ({range_pct:.1f}% 범위, {touch_count}회 터치)"
+        )
+    else:
+        return ChartPatternResult(
+            "사각형 (박스권)", "neutral", strength * 0.6,
+            f"박스권 내부 ({range_pct:.1f}% 범위, 위치 {pos_in_range:.0%})"
+        )
+
+
+# ─── 신규 패턴: Pennant ───────────────────────────────────
+
+def detect_pennant(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """페넌트: 강한 폴 + 수렴하는 삼각형 컨솔리데이션"""
+    if len(df) < 25:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+
+    pole_len = min(15, len(df) // 3)
+    flag_len = min(15, len(df) // 3)
+    if pole_len < 5 or flag_len < 5:
+        return None
+
+    pole_start = -(pole_len + flag_len)
+    pole_end = -flag_len
+
+    pole_move = (close[pole_end] - close[pole_start]) / close[pole_start] * 100
+
+    if abs(pole_move) < 4.0:
+        return None
+
+    flag_high = high[-flag_len:]
+    flag_low = low[-flag_len:]
+
+    h_slope, h_r2 = _linear_regression(flag_high)
+    l_slope, l_r2 = _linear_regression(flag_low)
+
+    # 수렴 확인: 슬로프가 서로 반대 방향
+    if h_slope * l_slope > 0:
+        return None  # 같은 방향이면 플래그 또는 채널
+
+    # 수렴 범위 감소 확인
+    range_start = flag_high[0] - flag_low[0]
+    range_end = flag_high[-1] - flag_low[-1]
+    if range_start <= 0 or range_end / range_start > 0.8:
+        return None
+
+    # 컨솔리데이션 범위가 폴 대비 적절
+    flag_range_pct = (max(flag_high) - min(flag_low)) / close[pole_start] * 100
+    if flag_range_pct > abs(pole_move) * 0.5:
+        return None
+
+    vol = _volume_confirmation(df)
+    convergence = 1.0 - range_end / range_start
+    geo = min(1.0, convergence + 0.3)
+    strength = _calc_strength(geo, vol)
+
+    if pole_move > 0:
+        return ChartPatternResult(
+            "상승 페넌트", "long", strength,
+            f"강한 상승 폴({pole_move:.1f}%) + 수렴 컨솔리데이션"
+        )
+    else:
+        return ChartPatternResult(
+            "하락 페넌트", "short", strength,
+            f"강한 하락 폴({pole_move:.1f}%) + 수렴 컨솔리데이션"
+        )
+
+
+# ─── 신규 패턴: Gap Analysis ─────────────────────────────
+
+def detect_gaps(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """갭 분석: Breakaway, Exhaustion, Island Reversal"""
+    if len(df) < 20:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+    vol = df["volume"].values if "volume" in df.columns else None
+
+    lookback = min(15, len(df) - 1)
+    best_gap = None
+    best_pct = 0.0
+
+    for i in range(-lookback, 0):
+        idx = len(df) + i
+        if idx < 1:
+            continue
+        # 갭 업: 현재 low > 이전 high
+        if low[idx] > high[idx - 1]:
+            gap_pct = (low[idx] - high[idx - 1]) / high[idx - 1] * 100
+            if gap_pct > best_pct:
+                best_pct = gap_pct
+                best_gap = ("up", idx, gap_pct)
+        # 갭 다운: 현재 high < 이전 low
+        elif high[idx] < low[idx - 1]:
+            gap_pct = (low[idx - 1] - high[idx]) / low[idx - 1] * 100
+            if gap_pct > best_pct:
+                best_pct = gap_pct
+                best_gap = ("down", idx, gap_pct)
+
+    if not best_gap or best_pct < 0.5:
+        return None
+
+    direction, gap_idx, gap_pct = best_gap
+
+    # 갭이 최근 3봉 이내인지 확인 (아일랜드 리버설 후보)
+    recency = len(df) - gap_idx
+    vol_factor = 0.5
+    if vol is not None and gap_idx >= 2:
+        avg = np.mean(vol[max(0, gap_idx - 20):gap_idx])
+        if avg > 0:
+            vol_factor = min(1.0, vol[gap_idx] / avg / 2.0)
+
+    strength = _calc_strength(min(1.0, gap_pct / 3.0), vol_factor)
+
+    # 갭 미충전 + 최근 → 강한 시그널
+    if recency <= 3:
+        strength = min(0.95, strength * 1.2)
+
+    if direction == "up":
+        if recency <= 5:
+            return ChartPatternResult(
+                "돌파 갭 (상승)", "long", strength,
+                f"상승 갭 {gap_pct:.2f}% (미충전, {recency}봉 전)"
+            )
+        else:
+            return ChartPatternResult(
+                "갭 (상승)", "long", strength * 0.7,
+                f"상승 갭 {gap_pct:.2f}% ({recency}봉 전)"
+            )
+    else:
+        if recency <= 5:
+            return ChartPatternResult(
+                "돌파 갭 (하락)", "short", strength,
+                f"하락 갭 {gap_pct:.2f}% (미충전, {recency}봉 전)"
+            )
+        else:
+            return ChartPatternResult(
+                "갭 (하락)", "short", strength * 0.7,
+                f"하락 갭 {gap_pct:.2f}% ({recency}봉 전)"
+            )
+
+
+# ─── 신규 패턴: Broadening Formation ─────────────────────
+
+def detect_broadening_formation(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """확장 패턴 (메가폰): 발산하는 고점+저점"""
+    if len(df) < 40:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+
+    lookback = min(50, len(df))
+    swing_highs, swing_lows = _find_swings(close[-lookback:], order=2)
+
+    if len(swing_highs) < 3 or len(swing_lows) < 3:
+        return None
+
+    h_prices = np.array([float(high[-lookback + i]) for i in swing_highs])
+    l_prices = np.array([float(low[-lookback + i]) for i in swing_lows])
+
+    h_slope, h_r2 = _linear_regression(h_prices)
+    l_slope, l_r2 = _linear_regression(l_prices)
+
+    # 고점은 상승, 저점은 하락 (발산)
+    if not (h_slope > 0 and l_slope < 0):
+        return None
+
+    if h_r2 < 0.3 or l_r2 < 0.3:
+        return None
+
+    # 범위 확장 확인
+    range_start = h_prices[0] - l_prices[0] if len(h_prices) > 0 and len(l_prices) > 0 else 0
+    range_end = h_prices[-1] - l_prices[-1]
+    if range_start <= 0 or range_end / range_start < 1.3:
+        return None
+
+    vol = _volume_confirmation(df)
+    divergence = range_end / range_start
+    geo = min(1.0, (h_r2 + l_r2) / 2 * divergence * 0.6)
+    strength = _calc_strength(geo, vol)
+
+    # 현재 위치 기반 시그널
+    curr = close[-1]
+    mid = (h_prices[-1] + l_prices[-1]) / 2
+
+    if curr > mid:
+        return ChartPatternResult(
+            "확장 패턴 (상단)", "short", strength,
+            f"메가폰 상단 (확장비 {divergence:.1f}x, R² h={h_r2:.2f} l={l_r2:.2f})"
+        )
+    else:
+        return ChartPatternResult(
+            "확장 패턴 (하단)", "long", strength,
+            f"메가폰 하단 (확장비 {divergence:.1f}x, R² h={h_r2:.2f} l={l_r2:.2f})"
+        )
+
+
+# ─── 신규 패턴: Diamond ──────────────────────────────────
+
+def detect_diamond(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """다이아몬드 패턴: 전반부 확장 + 후반부 수축"""
+    if len(df) < 40:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+
+    lookback = min(50, len(df))
+    mid = lookback // 2
+
+    recent_h = high[-lookback:]
+    recent_l = low[-lookback:]
+
+    # 전반부/후반부 범위 비교
+    first_half_ranges = recent_h[:mid] - recent_l[:mid]
+    second_half_ranges = recent_h[mid:] - recent_l[mid:]
+
+    if len(first_half_ranges) < 5 or len(second_half_ranges) < 5:
+        return None
+
+    # 전반부: 범위 확대
+    fh_slope, fh_r2 = _linear_regression(first_half_ranges)
+    # 후반부: 범위 축소
+    sh_slope, sh_r2 = _linear_regression(second_half_ranges)
+
+    if not (fh_slope > 0 and sh_slope < 0):
+        return None
+
+    # 중간 지점이 최대 범위
+    mid_range = np.max(first_half_ranges[-3:])
+    start_range = np.mean(first_half_ranges[:3])
+    end_range = np.mean(second_half_ranges[-3:])
+
+    if start_range <= 0 or mid_range / start_range < 1.3:
+        return None
+    if mid_range <= 0 or end_range / mid_range > 0.7:
+        return None
+
+    vol = _volume_confirmation(df)
+    geo = min(1.0, (fh_r2 + sh_r2) / 2 * 1.2)
+    strength = _calc_strength(geo, vol)
+
+    # 다이아몬드 전 추세에 따라 방향 결정
+    pre_trend = close[-lookback] - close[-lookback - min(20, lookback)]
+    if pre_trend > 0:
+        return ChartPatternResult(
+            "다이아몬드 탑", "short", strength,
+            f"상승 후 다이아몬드 형성 (확장→수축)"
+        )
+    else:
+        return ChartPatternResult(
+            "다이아몬드 바텀", "long", strength,
+            f"하락 후 다이아몬드 형성 (확장→수축)"
+        )
+
+
+# ─── 신규 패턴: Rounding Bottom ──────────────────────────
+
+def detect_rounding_bottom(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """라운딩 바텀 (소서): U자형 점진적 반전"""
+    if len(df) < 60:
+        return None
+
+    close = df["close"].values
+    lookback = min(80, len(df))
+    recent = close[-lookback:]
+
+    # 2차 회귀
+    x = np.arange(len(recent), dtype=float)
+    coeffs = np.polyfit(x, recent, 2)
+    a, b, c = coeffs
+
+    # a > 0 (위로 볼록) → 라운딩 바텀
+    if a <= 0:
+        return None
+
+    # R² 확인
+    predicted = np.polyval(coeffs, x)
+    ss_res = np.sum((recent - predicted) ** 2)
+    ss_tot = np.sum((recent - np.mean(recent)) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+    if r2 < 0.5:
+        return None
+
+    # 최저점이 중간 1/3에 위치
+    min_idx = np.argmin(recent)
+    if min_idx < len(recent) * 0.2 or min_idx > len(recent) * 0.8:
+        return None
+
+    # 현재 가격이 시작점 근처 또는 위에 (림 돌파)
+    rim_price = max(recent[0], recent[1])
+    curr = close[-1]
+    rim_break = curr > rim_price
+
+    vol = _volume_confirmation(df)
+    geo = r2 * (1.2 if rim_break else 0.8)
+    strength = _calc_strength(min(1.0, geo), vol)
+
+    if rim_break:
+        return ChartPatternResult(
+            "라운딩 바텀 (돌파)", "long", strength,
+            f"U자형 반전 완성, 림 돌파 (R²={r2:.2f})"
+        )
+    else:
+        return ChartPatternResult(
+            "라운딩 바텀 (형성)", "long", strength * 0.7,
+            f"U자형 반전 형성 중 (R²={r2:.2f})"
+        )
+
+
+# ─── 신규 패턴: Harmonic Patterns ────────────────────────
+
+def detect_harmonic_pattern(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """하모닉 패턴: Gartley, Butterfly, Bat (XABCD 피보나치)"""
+    if len(df) < 40:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+
+    swing_highs, swing_lows = _find_swings(close, order=2)
+    pivots = _merge_swings(close, swing_highs, swing_lows)
+
+    if len(pivots) < 5:
+        return None
+
+    # 마지막 5개 피벗 사용
+    best_result = None
+    best_score = 0.0
+
+    for start in range(max(0, len(pivots) - 8), len(pivots) - 4):
+        xabcd = pivots[start:start + 5]
+        if len(xabcd) < 5:
+            continue
+
+        x_price = xabcd[0][2]
+        a_price = xabcd[1][2]
+        b_price = xabcd[2][2]
+        c_price = xabcd[3][2]
+        d_price = xabcd[4][2]
+
+        xa = abs(a_price - x_price)
+        ab = abs(b_price - a_price)
+        bc = abs(c_price - b_price)
+        cd = abs(d_price - c_price)
+
+        if xa == 0 or ab == 0 or bc == 0:
+            continue
+
+        ab_xa = ab / xa  # AB retracement of XA
+        bc_ab = bc / ab  # BC retracement of AB
+        cd_bc = cd / bc  # CD extension of BC
+        ad_xa = abs(d_price - x_price) / xa  # AD retracement of XA
+
+        # Gartley: AB=0.618, BC=0.382-0.886, CD=1.272-1.618, AD=0.786
+        gartley_score = (
+            _fib_score(ab_xa, 0.618) * 0.3 +
+            max(_fib_score(bc_ab, 0.382), _fib_score(bc_ab, 0.886)) * 0.2 +
+            max(_fib_score(cd_bc, 1.272), _fib_score(cd_bc, 1.618)) * 0.2 +
+            _fib_score(ad_xa, 0.786) * 0.3
+        )
+
+        # Butterfly: AB=0.786, BC=0.382-0.886, CD=1.618-2.618, AD=1.272
+        butterfly_score = (
+            _fib_score(ab_xa, 0.786) * 0.3 +
+            max(_fib_score(bc_ab, 0.382), _fib_score(bc_ab, 0.886)) * 0.2 +
+            max(_fib_score(cd_bc, 1.618), _fib_score(cd_bc, 2.618)) * 0.2 +
+            _fib_score(ad_xa, 1.272) * 0.3
+        )
+
+        # Bat: AB=0.382-0.5, BC=0.382-0.886, CD=1.618-2.618, AD=0.886
+        bat_score = (
+            max(_fib_score(ab_xa, 0.382), _fib_score(ab_xa, 0.5)) * 0.3 +
+            max(_fib_score(bc_ab, 0.382), _fib_score(bc_ab, 0.886)) * 0.2 +
+            max(_fib_score(cd_bc, 1.618), _fib_score(cd_bc, 2.618)) * 0.2 +
+            _fib_score(ad_xa, 0.886) * 0.3
+        )
+
+        patterns = [
+            ("Gartley", gartley_score),
+            ("Butterfly", butterfly_score),
+            ("Bat", bat_score),
+        ]
+        best_name, score = max(patterns, key=lambda x: x[1])
+
+        if score > best_score and score > 0.55:
+            best_score = score
+            # D 지점에서 반전 예상
+            is_bullish = xabcd[0][1] == "low"  # X가 저점이면 bullish
+            vol = _volume_confirmation(df)
+            strength = _calc_strength(score, vol)
+
+            if is_bullish:
+                best_result = ChartPatternResult(
+                    f"하모닉 {best_name} (상승)", "long", strength,
+                    f"{best_name} 패턴 D점 반전 (점수 {score:.2f})"
+                )
+            else:
+                best_result = ChartPatternResult(
+                    f"하모닉 {best_name} (하락)", "short", strength,
+                    f"{best_name} 패턴 D점 반전 (점수 {score:.2f})"
+                )
+
+    return best_result
+
+
+# ─── 신규 패턴: Three Drives ─────────────────────────────
+
+def detect_three_drives(df: pd.DataFrame) -> Optional[ChartPatternResult]:
+    """쓰리 드라이브: 3연속 피보나치 확장 드라이브"""
+    if len(df) < 40:
+        return None
+
+    close = df["close"].values
+    swing_highs, swing_lows = _find_swings(close, order=2)
+    pivots = _merge_swings(close, swing_highs, swing_lows)
+
+    if len(pivots) < 6:
+        return None
+
+    # 마지막 7개 피벗 시도 (3 drives + 2 corrections + start)
+    for start in range(max(0, len(pivots) - 9), len(pivots) - 5):
+        segment = pivots[start:start + 7]
+        if len(segment) < 6:
+            segment = pivots[start:start + 6]
+        if len(segment) < 6:
+            continue
+
+        # 상승 쓰리 드라이브: low-high-low-high-low-high (3 highs ascending)
+        if segment[0][1] == "low" and len(segment) >= 6:
+            drives_up = True
+            for i in range(0, min(6, len(segment)), 2):
+                if segment[i][1] != "low":
+                    drives_up = False
+                    break
+            for i in range(1, min(6, len(segment)), 2):
+                if segment[i][1] != "high":
+                    drives_up = False
+                    break
+
+            if drives_up and len(segment) >= 6:
+                d1 = segment[1][2] - segment[0][2]  # Drive 1
+                c1 = segment[1][2] - segment[2][2]  # Correction 1
+                d2 = segment[3][2] - segment[2][2]  # Drive 2
+                c2 = segment[3][2] - segment[4][2]  # Correction 2
+                d3 = segment[5][2] - segment[4][2]  # Drive 3
+
+                if d1 <= 0 or c1 <= 0 or d2 <= 0:
+                    continue
+
+                # 보정: 61.8%~78.6% 되돌림
+                ret1 = c1 / d1
+                ret2 = c2 / d2 if d2 > 0 else 0
+
+                score1 = max(_fib_score(ret1, 0.618), _fib_score(ret1, 0.786))
+                score2 = max(_fib_score(ret2, 0.618), _fib_score(ret2, 0.786))
+
+                # 드라이브 확장: ~127.2%
+                ext1 = d2 / c1 if c1 > 0 else 0
+                ext2 = d3 / c2 if c2 > 0 else 0
+                ext_score1 = _fib_score(ext1, 1.272)
+                ext_score2 = _fib_score(ext2, 1.272)
+
+                total = (score1 + score2 + ext_score1 + ext_score2) / 4
+
+                if total > 0.45:
+                    vol = _volume_confirmation(df)
+                    strength = _calc_strength(total, vol)
+                    return ChartPatternResult(
+                        "쓰리 드라이브 (하락 반전)", "short", strength,
+                        f"3연속 상승 드라이브 완성 (점수 {total:.2f})"
+                    )
+
+        # 하락 쓰리 드라이브: high-low-high-low-high-low (3 lows descending)
+        if segment[0][1] == "high" and len(segment) >= 6:
+            drives_down = True
+            for i in range(0, min(6, len(segment)), 2):
+                if segment[i][1] != "high":
+                    drives_down = False
+                    break
+            for i in range(1, min(6, len(segment)), 2):
+                if segment[i][1] != "low":
+                    drives_down = False
+                    break
+
+            if drives_down and len(segment) >= 6:
+                d1 = segment[0][2] - segment[1][2]
+                c1 = segment[2][2] - segment[1][2]
+                d2 = segment[2][2] - segment[3][2]
+                c2 = segment[4][2] - segment[3][2]
+                d3 = segment[4][2] - segment[5][2]
+
+                if d1 <= 0 or c1 <= 0 or d2 <= 0:
+                    continue
+
+                ret1 = c1 / d1
+                ret2 = c2 / d2 if d2 > 0 else 0
+                score1 = max(_fib_score(ret1, 0.618), _fib_score(ret1, 0.786))
+                score2 = max(_fib_score(ret2, 0.618), _fib_score(ret2, 0.786))
+
+                ext1 = d2 / c1 if c1 > 0 else 0
+                ext2 = d3 / c2 if c2 > 0 else 0
+                ext_score1 = _fib_score(ext1, 1.272)
+                ext_score2 = _fib_score(ext2, 1.272)
+
+                total = (score1 + score2 + ext_score1 + ext_score2) / 4
+
+                if total > 0.45:
+                    vol = _volume_confirmation(df)
+                    strength = _calc_strength(total, vol)
+                    return ChartPatternResult(
+                        "쓰리 드라이브 (상승 반전)", "long", strength,
+                        f"3연속 하락 드라이브 완성 (점수 {total:.2f})"
+                    )
+
+    return None
+
+
+# ─── 패턴 신선도 점수 ────────────────────────────────────
+
+def _recency_boost(strength: float, lookback_used: int, total_candles: int) -> float:
+    """최근 패턴일수록 강도 부스트"""
+    if total_candles <= 0:
+        return strength
+    recency = lookback_used / total_candles
+    if recency <= 0.1:
+        return min(0.95, strength * 1.15)
+    elif recency <= 0.3:
+        return strength
+    else:
+        return strength * 0.85
+
+
+# ─── 중복 제거 (확장) ────────────────────────────────────
+
 def _deduplicate_patterns(patterns: List[ChartPatternResult]) -> List[ChartPatternResult]:
-    """중복/충돌 패턴 제거"""
+    """중복/충돌 패턴 제거 (18개 패턴 대응)"""
     if len(patterns) <= 1:
         return patterns
 
@@ -1038,13 +1641,40 @@ def _deduplicate_patterns(patterns: List[ChartPatternResult]) -> List[ChartPatte
     short_patterns = sorted([p for p in patterns if p.signal == "short"], key=lambda p: p.strength, reverse=True)
     neutral_patterns = [p for p in patterns if p.signal == "neutral"]
 
-    # 같은 방향: 강한 2개만 유지
-    result = long_patterns[:2] + short_patterns[:2] + neutral_patterns[:1]
+    # 유사 패턴 충돌 해소: 더 구체적인 것 유지
+    SIMILAR_GROUPS = [
+        {"삼각형", "페넌트", "웨지"},  # 수렴 패턴끼리
+        {"플래그", "페넌트"},  # 연속 패턴끼리
+    ]
 
-    # 충돌: 롱과 숏 동시 + 강도 차이 작으면 약한 쪽 제거
-    if long_patterns and short_patterns:
-        max_long = long_patterns[0].strength
-        max_short = short_patterns[0].strength
+    def _filter_similar(pats: list) -> list:
+        kept = []
+        used_groups: set = set()
+        for p in pats:
+            dominated = False
+            for gi, group in enumerate(SIMILAR_GROUPS):
+                # 이미 이 그룹에서 더 강한 것이 있으면 스킵
+                if gi in used_groups:
+                    for k in kept:
+                        if any(g in k.name for g in group) and any(g in p.name for g in group):
+                            dominated = True
+                            break
+            if not dominated:
+                kept.append(p)
+                for gi, group in enumerate(SIMILAR_GROUPS):
+                    if any(g in p.name for g in group):
+                        used_groups.add(gi)
+        return kept
+
+    long_filtered = _filter_similar(long_patterns)[:3]
+    short_filtered = _filter_similar(short_patterns)[:3]
+
+    result = long_filtered + short_filtered + neutral_patterns[:1]
+
+    # 충돌: 롱과 숏 동시 + 강도 차이 작으면 모두 제거
+    if long_filtered and short_filtered:
+        max_long = long_filtered[0].strength
+        max_short = short_filtered[0].strength
         if abs(max_long - max_short) < 0.15:
             return neutral_patterns[:1]
 
@@ -1059,6 +1689,7 @@ def analyze_chart_patterns(df: pd.DataFrame) -> List[ChartPatternResult]:
         return []
 
     detectors = [
+        # 기존 10개
         detect_double_top,
         detect_double_bottom,
         detect_head_and_shoulders,
@@ -1069,6 +1700,15 @@ def analyze_chart_patterns(df: pd.DataFrame) -> List[ChartPatternResult]:
         detect_cup_and_handle,
         detect_triple_top_bottom,
         detect_elliott_wave,
+        # 신규 8개
+        detect_rectangle,
+        detect_pennant,
+        detect_gaps,
+        detect_broadening_formation,
+        detect_diamond,
+        detect_rounding_bottom,
+        detect_harmonic_pattern,
+        detect_three_drives,
     ]
 
     patterns = []

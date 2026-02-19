@@ -70,6 +70,7 @@ from analysis.prediction import generate_prediction
 from analysis.self_learning import SelfLearningEngine
 from analysis.backtest import BacktestEngine
 from analysis.correlation import CorrelationAnalyzer
+from analysis.indicator_series import compute_indicator_series
 
 # 로깅 초기화
 setup_logging(log_dir=LOG_DIR, level=LOG_LEVEL)
@@ -1049,6 +1050,36 @@ async def get_ohlcv(
     except Exception as e:
         logger.error("OHLCV 조회 실패 [%s/%s]: %s", symbol, timeframe, e, exc_info=True)
         raise HTTPException(status_code=500, detail="캔들 데이터 조회 실패")
+
+
+@app.get("/api/indicators/{symbol}")
+async def get_indicator_series(
+    symbol: str,
+    timeframe: str = Query(default=DEFAULT_TIMEFRAME),
+    indicators: str = Query(default="ema,bb"),
+    limit: int = Query(default=500, le=2000),
+):
+    """지표 시계열 데이터 (차트 오버레이용)"""
+    timeframe = _validate_timeframe(timeframe)
+    symbol = _normalize_symbol(symbol)
+
+    try:
+        df = await candle_repo.get_candles(symbol, timeframe, limit=limit)
+        if len(df) < 20:
+            raise HTTPException(status_code=400, detail="데이터 부족")
+
+        # df에 time 컬럼 추가 (unix timestamp)
+        df = df.copy()
+        df["time"] = df.index.astype(int) // 10**9
+
+        requested = [i.strip().lower() for i in indicators.split(",") if i.strip()]
+        result = compute_indicator_series(df, requested, timeframe)
+        return {"symbol": symbol, "timeframe": timeframe, "indicators": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("지표 시계열 조회 실패 [%s/%s]: %s", symbol, timeframe, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="지표 데이터 조회 실패")
 
 
 @app.get("/api/ticker/{symbol}")

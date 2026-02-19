@@ -20,6 +20,10 @@ import PredictionInfoCard from "@/components/PredictionInfoCard";
 import ErrorState from "@/components/ErrorState";
 import { ChartSkeleton } from "@/components/Skeleton";
 import { usePrediction } from "@/hooks/usePrediction";
+import { useIndicatorToggles } from "@/hooks/useIndicatorToggles";
+import IndicatorToolbar from "@/components/IndicatorToolbar";
+import { fetchIndicatorSeries, IndicatorSeriesResponse } from "@/lib/api";
+import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, RefreshCw, TrendingUp, Clock, CheckCircle } from "lucide-react";
 
 export default function CoinDetailPage() {
@@ -57,6 +61,26 @@ export default function CoinDetailPage() {
     predictionProgress,
     predictionVerified,
   });
+
+  // ─── 지표 토글 ─────────────────────────────────────────
+  const { indicators: indicatorConfigs, toggle: toggleIndicator, enabledIds, enabledOverlays, enabledOscillators } = useIndicatorToggles();
+  const [indicatorData, setIndicatorData] = useState<IndicatorSeriesResponse | null>(null);
+  const indDebounce = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    clearTimeout(indDebounce.current);
+    if (enabledIds.length === 0) {
+      setIndicatorData(null);
+      return;
+    }
+    const normalSym = symbol.includes("/") ? symbol : symbol.replace("USDT", "/USDT");
+    indDebounce.current = setTimeout(() => {
+      fetchIndicatorSeries(normalSym, timeframe, enabledIds)
+        .then(setIndicatorData)
+        .catch(() => setIndicatorData(null));
+    }, 300);
+    return () => clearTimeout(indDebounce.current);
+  }, [symbol, timeframe, enabledIds]);
 
   const displaySymbol = symbol.includes("/") ? symbol : symbol.replace("USDT", "/USDT");
 
@@ -152,11 +176,20 @@ export default function CoinDetailPage() {
               )}
             </div>
           </div>
-          {loading && candles.length === 0 ? (
-            <ChartSkeleton />
-          ) : (
-            <CandleChart candles={candles} symbol={displaySymbol} prediction={activePrediction} />
-          )}
+          <IndicatorToolbar indicators={indicatorConfigs} onToggle={toggleIndicator} />
+          <div className="mt-2">
+            {loading && candles.length === 0 ? (
+              <ChartSkeleton />
+            ) : (
+              <CandleChart
+                candles={candles}
+                symbol={displaySymbol}
+                prediction={activePrediction}
+                indicatorData={indicatorData}
+                enabledIndicators={indicatorConfigs.filter((i) => i.enabled)}
+              />
+            )}
+          </div>
           {activePrediction && activePrediction.status === "ACTIVE" && (
             <div className="mt-4 animate-fade-in">
               <PredictionInfoCard prediction={activePrediction} />
