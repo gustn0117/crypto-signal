@@ -66,6 +66,8 @@ from db import Database, CandleRepo, SignalRepo, SignalTrackRepo, PredictionRepo
 from data_collector import DataCollector
 from analysis.prediction import generate_prediction
 from analysis.self_learning import SelfLearningEngine
+from analysis.backtest import BacktestEngine
+from analysis.correlation import CorrelationAnalyzer
 
 # 로깅 초기화
 setup_logging(log_dir=LOG_DIR, level=LOG_LEVEL)
@@ -83,6 +85,8 @@ track_repo: SignalTrackRepo | None = None
 prediction_repo: PredictionRepo | None = None
 alert_repo: AlertRepo | None = None
 learning_engine: SelfLearningEngine | None = None
+backtest_engine: BacktestEngine | None = None
+correlation_analyzer: CorrelationAnalyzer | None = None
 
 # WebSocket 연결 관리
 connected_clients: List[WebSocket] = []
@@ -303,6 +307,11 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
     btc_signal = _market_context.get("btc_signal")
     is_alt = symbol != "BTC/USDT"
 
+    # 과거 수익률 추출 (몬테카를로 리샘플링용)
+    hist_returns = None
+    if len(df) >= 100:
+        hist_returns = df["close"].pct_change().dropna().values
+
     prediction_data = generate_prediction(
         signal_direction=signal.signal,
         confidence=signal.confidence,
@@ -317,6 +326,7 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         sr_levels=sr_levels,
         btc_signal_direction=btc_signal,
         is_altcoin=is_alt,
+        historical_returns=hist_returns,
     )
 
     tp = signal.trade_params or {}
@@ -713,6 +723,31 @@ async def run_self_learning():
         logger.error("자기학습 실패: %s", e)
 
 
+async def run_backtest_update():
+    """백테스트 통계 갱신 (6시간마다)"""
+    if not backtest_engine:
+        return
+    try:
+        stats = await backtest_engine.run_backtest()
+        if stats:
+            logger.info("백테스트 갱신 완료: %d개 예측 분석", stats.get("total_predictions", 0))
+    except Exception as e:
+        logger.error("백테스트 갱신 실패: %s", e)
+
+
+async def run_correlation_update():
+    """상관관계 분석 갱신 (5분마다)"""
+    if not correlation_analyzer or not scanner:
+        return
+    try:
+        symbols = list({s.get("symbol", "") for sigs in scanner.latest_signals.values() for s in sigs})
+        if len(symbols) < 5:
+            symbols = list(SCAN_SYMBOLS)
+        await correlation_analyzer.update_correlation(symbols)
+    except Exception as e:
+        logger.error("상관관계 갱신 실패: %s", e)
+
+
 async def run_backfill():
     """히스토리 백필"""
     try:
@@ -735,7 +770,7 @@ async def run_backfill():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine
+    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer
 
     # DB 초기화
     await database.connect()
@@ -745,10 +780,12 @@ async def lifespan(app: FastAPI):
     prediction_repo = PredictionRepo(database.client, SUPABASE_SCHEMA)
     alert_repo = AlertRepo(database.client, SUPABASE_SCHEMA)
     learning_engine = SelfLearningEngine(database.client, SUPABASE_SCHEMA)
+    backtest_engine = BacktestEngine(database.client, SUPABASE_SCHEMA)
     logger.info("Supabase 데이터베이스 연결 완료")
 
     # 스캐너 생성
     scanner = MarketScanner(async_client, candle_repo, signal_repo, track_repo)
+    correlation_analyzer = CorrelationAnalyzer(candle_repo)
 
     # 학습 가중치 로드
     try:
@@ -774,9 +811,11 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(verify_predictions, "interval", minutes=5)
     scheduler.add_job(update_prediction_progress, "interval", seconds=60)
     scheduler.add_job(run_self_learning, "interval", hours=6)
+    scheduler.add_job(run_backtest_update, "interval", hours=6)
+    scheduler.add_job(run_correlation_update, "interval", minutes=5)
     scheduler.add_job(run_backfill, "interval", hours=24)
     scheduler.start()
-    logger.info("멀티TF 스캐너 시작: %s, 자기학습 활성화", SCAN_TIMEFRAMES)
+    logger.info("멀티TF 스캐너 시작: %s, 자기학습/백테스트/상관관계 활성화", SCAN_TIMEFRAMES)
 
     # 백필: 백그라운드로 즉시 시작
     asyncio.create_task(run_backfill())
@@ -898,6 +937,21 @@ async def analyze_symbol(
                     }
             except Exception:
                 pass
+
+        # 시그널 품질 점수 추가 (백테스트 승률 + BTC 베타)
+        quality = {}
+        if backtest_engine and signal.signal != "NEUTRAL":
+            wr = backtest_engine.get_signal_win_rate(signal.signal, signal.confidence)
+            if wr:
+                quality["signal_win_rate"] = wr.get("signal_win_rate")
+                quality["signal_total"] = wr.get("signal_total")
+                quality["confidence_win_rate"] = wr.get("confidence_win_rate")
+        if correlation_analyzer and symbol != "BTC/USDT":
+            beta = correlation_analyzer.get_beta(symbol)
+            if beta is not None:
+                quality["btc_beta"] = beta
+        if quality:
+            result["quality"] = quality
 
         return result
     except HTTPException:
@@ -1059,6 +1113,49 @@ async def trigger_learning():
     return {"message": "학습 완료", "weights": weights}
 
 
+# ─── 백테스트 API ──────────────────────────────────────
+
+@app.get("/api/backtest/stats")
+async def get_backtest_stats():
+    """백테스트 통계 조회"""
+    if not backtest_engine:
+        return {}
+    stats = await backtest_engine.run_backtest()
+    return stats
+
+
+@app.get("/api/backtest/win-rate")
+async def get_backtest_win_rate(
+    signal: str = Query(default="LONG"),
+    confidence: float = Query(default=0.5),
+):
+    """특정 시그널 유형의 역대 승률 조회"""
+    if not backtest_engine:
+        return {"win_rate": None}
+    result = backtest_engine.get_signal_win_rate(signal, confidence)
+    return result or {"win_rate": None}
+
+
+# ─── 상관관계 API ──────────────────────────────────────
+
+@app.get("/api/correlation/summary")
+async def get_correlation_summary():
+    """상관관계 분석 요약"""
+    if not correlation_analyzer:
+        return {"symbol_count": 0, "beta_count": 0}
+    return correlation_analyzer.get_summary()
+
+
+@app.get("/api/correlation/beta/{symbol}")
+async def get_symbol_beta(symbol: str):
+    """특정 심볼의 BTC 대비 베타 계수"""
+    symbol = _normalize_symbol(symbol)
+    if not correlation_analyzer:
+        return {"symbol": symbol, "beta": None}
+    beta = correlation_analyzer.get_beta(symbol)
+    return {"symbol": symbol, "beta": beta}
+
+
 # ─── 예측 API ──────────────────────────────────────────
 
 @app.post("/api/predictions/{symbol}")
@@ -1116,6 +1213,11 @@ async def create_prediction(
         btc_signal = _market_context.get("btc_signal")
         is_alt = symbol != "BTC/USDT"
 
+        # 과거 수익률 추출 (몬테카를로 리샘플링용)
+        hist_returns = None
+        if len(df) >= 100:
+            hist_returns = df["close"].pct_change().dropna().values
+
         prediction_data = generate_prediction(
             signal_direction=signal.signal,
             confidence=signal.confidence,
@@ -1130,6 +1232,7 @@ async def create_prediction(
             sr_levels=sr_levels,
             btc_signal_direction=btc_signal,
             is_altcoin=is_alt,
+            historical_returns=hist_returns,
         )
 
         tp = signal.trade_params or {}

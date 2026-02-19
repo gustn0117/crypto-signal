@@ -224,6 +224,48 @@ export default function CoinDetailPage() {
             />
           )}
 
+          {/* 시그널 품질 카드 */}
+          {signal?.quality && (signal.quality.signal_win_rate != null || signal.quality.btc_beta != null) && (
+            <div className="cd-card">
+              <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">
+                시그널 품질
+              </h3>
+              <div className="space-y-2.5">
+                {signal.quality.signal_win_rate != null && (
+                  <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
+                    <span className="text-xs text-muted">과거 유사 시그널 승률</span>
+                    <span className={`text-sm font-semibold ${
+                      signal.quality.signal_win_rate >= 0.6 ? "text-success" :
+                      signal.quality.signal_win_rate >= 0.4 ? "text-heading" : "text-danger"
+                    }`}>
+                      {(signal.quality.signal_win_rate * 100).toFixed(1)}%
+                      <span className="text-xs text-muted ml-1">({signal.quality.signal_total}건)</span>
+                    </span>
+                  </div>
+                )}
+                {signal.quality.confidence_win_rate != null && (
+                  <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
+                    <span className="text-xs text-muted">신뢰도 구간 승률</span>
+                    <span className={`text-sm font-semibold ${
+                      signal.quality.confidence_win_rate >= 0.6 ? "text-success" :
+                      signal.quality.confidence_win_rate >= 0.4 ? "text-heading" : "text-danger"
+                    }`}>
+                      {(signal.quality.confidence_win_rate * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                )}
+                {signal.quality.btc_beta != null && (
+                  <div className="flex items-center justify-between px-3 py-2 rounded-card bg-card-active">
+                    <span className="text-xs text-muted">BTC 베타</span>
+                    <span className="text-sm font-semibold text-heading">
+                      {signal.quality.btc_beta.toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* 가격 정보 카드 */}
           <div className="cd-card">
             <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">

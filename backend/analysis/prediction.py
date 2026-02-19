@@ -1,10 +1,10 @@
 """
-몬테카를로 가격 예측 엔진 (v2)
-500회 시뮬레이션 → 중앙값 = 예측선, 10/90 퍼센타일 = 신뢰 구간
+몬테카를로 가격 예측 엔진 (v3)
+2000회 시뮬레이션 → 중앙값 = 예측선, 10/90 퍼센타일 = 신뢰 구간
 
-v2 개선:
-- 시뮬레이션 횟수 200→500 (서버 자원 활용)
-- Fat-tail 분포: 정규분포 → Student's t (df=5)
+v3 개선:
+- 시뮬레이션 횟수 500→2000 (서버 자원 최대 활용)
+- 하이브리드 분포: 실제 과거 수익률 분포 + Student's t 폴백
 - BTC 상관관계 드리프트 보정 (알트코인)
 - 시간대별 변동성 프로필 (아시아/유럽/미국 세션)
 """
@@ -21,7 +21,7 @@ TF_SECONDS = {
     "1h": 3600, "4h": 14400, "1d": 86400,
 }
 
-NUM_SIMULATIONS = 500
+NUM_SIMULATIONS = 2000
 
 # Student's t 자유도 (fat tail 정도: 낮을수록 꼬리 두꺼움)
 T_DISTRIBUTION_DF = 5
@@ -58,6 +58,7 @@ def generate_prediction(
     sr_levels: list[float] | None = None,
     btc_signal_direction: str | None = None,
     is_altcoin: bool = False,
+    historical_returns: np.ndarray | None = None,
 ) -> dict:
     """
     몬테카를로 시뮬레이션 기반 미래 가격 경로 생성 (v2).
@@ -76,6 +77,7 @@ def generate_prediction(
         sr_levels: 지지/저항 가격 레벨 리스트
         btc_signal_direction: BTC의 시그널 방향 (알트코인 상관관계 보정용)
         is_altcoin: 알트코인 여부
+        historical_returns: 과거 캔들의 수익률 배열 (리샘플링용, 100개 이상 필요)
 
     Returns:
         dict with predicted_path, upper_bound_path, lower_bound_path, horizon_candles
@@ -117,10 +119,17 @@ def generate_prediction(
     # ── 6. 지지/저항 레벨 ──
     sr = sorted(sr_levels) if sr_levels else []
 
-    # ── 7. 시뮬레이션 실행 (Student's t 분포) ──
+    # ── 7. 시뮬레이션 실행 (하이브리드: 실제 수익률 분포 or Student's t) ──
     rng = np.random.default_rng()
     all_paths = np.zeros((NUM_SIMULATIONS, horizon_candles + 1))
     all_paths[:, 0] = entry_price
+
+    # 실제 과거 수익률이 충분하면 리샘플링 사용
+    use_historical = (historical_returns is not None and len(historical_returns) >= 100)
+    if use_historical:
+        hist_std = float(np.std(historical_returns))
+        if hist_std <= 0:
+            use_historical = False
 
     volume_ratio = snap.get("volume_ratio", 1.0)
     start_hour = now.hour
@@ -128,8 +137,13 @@ def generate_prediction(
     for sim in range(NUM_SIMULATIONS):
         price = entry_price
         for step in range(1, horizon_candles + 1):
-            # Fat-tail 노이즈 (Student's t)
-            noise = scipy_stats.t.rvs(df=T_DISTRIBUTION_DF, random_state=rng) * step_vol
+            if use_historical:
+                # 실제 과거 수익률에서 리샘플링 → 가격 단위로 변환
+                sampled_return = rng.choice(historical_returns)
+                noise = sampled_return * entry_price * (step_vol / (hist_std * entry_price + 1e-12))
+            else:
+                # Fat-tail 노이즈 (Student's t)
+                noise = scipy_stats.t.rvs(df=T_DISTRIBUTION_DF, random_state=rng) * step_vol
 
             # 시간대별 변동성 조정
             step_hour = (start_hour + int(step * candle_sec / 3600)) % 24

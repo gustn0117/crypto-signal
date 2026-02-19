@@ -38,6 +38,14 @@ export interface Signal {
   mtf_confirmation?: MTFData;
   price_levels?: PriceLevelsData;
   track?: SignalTrack;
+  quality?: SignalQuality;
+}
+
+export interface SignalQuality {
+  signal_win_rate?: number;
+  signal_total?: number;
+  confidence_win_rate?: number;
+  btc_beta?: number;
 }
 
 export interface TradeParamsData {
