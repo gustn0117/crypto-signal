@@ -1434,6 +1434,19 @@ async def verify_prediction_manual(prediction_id: int):
     return result
 
 
+@app.post("/api/predictions/{prediction_id}/expire")
+async def expire_prediction(prediction_id: int):
+    prediction = await prediction_repo.get_prediction_by_id(prediction_id)
+    if not prediction:
+        raise HTTPException(status_code=404, detail="예측을 찾을 수 없습니다")
+    if prediction["status"] != "ACTIVE":
+        raise HTTPException(status_code=400, detail="활성 예측이 아닙니다")
+    ok = await prediction_repo.expire_prediction(prediction_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="만료 처리 실패")
+    return {"success": True, "prediction_id": prediction_id}
+
+
 # ─── 알림 API (DB 기반) ──────────────────────────────────
 
 @app.get("/api/alerts")

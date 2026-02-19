@@ -10,6 +10,7 @@ import {
   fetchPredictions,
   fetchPredictionStats,
   verifyPrediction,
+  expirePrediction,
 } from "@/lib/api";
 
 interface WsPredictionEvents {
@@ -124,6 +125,20 @@ export function usePrediction(
     [loadPredictions]
   );
 
+  const expire = useCallback(
+    async (predictionId: number) => {
+      try {
+        await expirePrediction(predictionId);
+        setActivePrediction(null);
+        await loadPredictions();
+      } catch (error) {
+        console.error("예측 초기화 실패:", error);
+        throw error;
+      }
+    },
+    [loadPredictions]
+  );
+
   return {
     activePrediction,
     predictions,
@@ -132,6 +147,7 @@ export function usePrediction(
     generating,
     generate,
     verify,
+    expire,
     reload: loadPredictions,
   };
 }

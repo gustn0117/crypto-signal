@@ -465,3 +465,15 @@ export async function verifyPrediction(predictionId: number): Promise<Prediction
   return res.json();
 }
 
+export async function expirePrediction(predictionId: number): Promise<{ success: boolean }> {
+  const res = await fetch(
+    `${API_BASE}/api/predictions/${predictionId}/expire`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+

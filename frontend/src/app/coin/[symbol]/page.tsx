@@ -55,6 +55,7 @@ export default function CoinDetailPage() {
     generating,
     generate,
     verify,
+    expire,
     reload: reloadPredictions,
   } = usePrediction(symbol, timeframe, {
     predictionCreated,
@@ -192,7 +193,7 @@ export default function CoinDetailPage() {
           </div>
           {activePrediction && activePrediction.status === "ACTIVE" && (
             <div className="mt-4 animate-fade-in">
-              <PredictionInfoCard prediction={activePrediction} />
+              <PredictionInfoCard prediction={activePrediction} onExpire={expire} />
             </div>
           )}
         </div>
