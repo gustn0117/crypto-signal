@@ -139,6 +139,46 @@ CREATE TABLE IF NOT EXISTS coin.adaptive_weights (
     sample_count    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
+
+-- paper_accounts (모의 트레이딩 계좌)
+CREATE TABLE IF NOT EXISTS coin.paper_accounts (
+    id                BIGSERIAL PRIMARY KEY,
+    name              TEXT NOT NULL DEFAULT 'Default',
+    initial_balance   DOUBLE PRECISION NOT NULL DEFAULT 10000.0,
+    balance           DOUBLE PRECISION NOT NULL DEFAULT 10000.0,
+    total_pnl         DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    total_trades      INTEGER NOT NULL DEFAULT 0,
+    winning_trades    INTEGER NOT NULL DEFAULT 0,
+    losing_trades     INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+-- paper_trades (모의 트레이딩 거래)
+CREATE TABLE IF NOT EXISTS coin.paper_trades (
+    id                  BIGSERIAL PRIMARY KEY,
+    account_id          BIGINT NOT NULL,
+    symbol              TEXT NOT NULL,
+    direction           TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'OPEN',
+    entry_price         DOUBLE PRECISION NOT NULL,
+    current_price       DOUBLE PRECISION DEFAULT NULL,
+    close_price         DOUBLE PRECISION DEFAULT NULL,
+    quantity            DOUBLE PRECISION NOT NULL,
+    position_usdt       DOUBLE PRECISION NOT NULL,
+    stop_loss           DOUBLE PRECISION DEFAULT NULL,
+    take_profit_1       DOUBLE PRECISION DEFAULT NULL,
+    take_profit_2       DOUBLE PRECISION DEFAULT NULL,
+    take_profit_3       DOUBLE PRECISION DEFAULT NULL,
+    unrealized_pnl      DOUBLE PRECISION DEFAULT 0.0,
+    unrealized_pnl_pct  DOUBLE PRECISION DEFAULT 0.0,
+    realized_pnl        DOUBLE PRECISION DEFAULT NULL,
+    realized_pnl_pct    DOUBLE PRECISION DEFAULT NULL,
+    close_reason        TEXT DEFAULT NULL,
+    opened_at           TEXT NOT NULL,
+    closed_at           TEXT DEFAULT NULL,
+    updated_at          TEXT NOT NULL
+);
 """
 
 # ── 인덱스 생성 ──────────────────────────────────────────
@@ -167,6 +207,12 @@ CREATE INDEX IF NOT EXISTS idx_predictions_symbol
 
 CREATE INDEX IF NOT EXISTS idx_predictions_status
     ON coin.predictions (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_paper_trades_status
+    ON coin.paper_trades (account_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_paper_trades_history
+    ON coin.paper_trades (account_id, closed_at DESC);
 """
 
 # ── RPC 함수 ─────────────────────────────────────────────

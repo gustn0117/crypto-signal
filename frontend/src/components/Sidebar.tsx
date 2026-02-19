@@ -13,11 +13,13 @@ import {
   ChevronRight,
   BarChart3,
   X,
+  Wallet,
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "대시보드", icon: LayoutDashboard },
   { href: "/predictions", label: "예측", icon: Target },
+  { href: "/paper-trading", label: "모의투자", icon: Wallet },
   { href: "/history", label: "히스토리", icon: History },
   { href: "/alerts", label: "알림 설정", icon: Bell },
 ];

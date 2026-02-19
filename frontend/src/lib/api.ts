@@ -489,3 +489,124 @@ export async function expireAllPredictions(): Promise<{ success: boolean; expire
   return res.json();
 }
 
+// ─── 모의 트레이딩 ──────────────────────────────────────
+
+export interface PaperAccount {
+  id: number;
+  name: string;
+  initial_balance: number;
+  balance: number;
+  total_pnl: number;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaperTrade {
+  id: number;
+  account_id: number;
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  status: "OPEN" | "CLOSED";
+  entry_price: number;
+  current_price: number | null;
+  close_price: number | null;
+  quantity: number;
+  position_usdt: number;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  take_profit_3: number | null;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+  realized_pnl: number | null;
+  realized_pnl_pct: number | null;
+  close_reason: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  updated_at: string;
+}
+
+export interface PaperPositionUpdate {
+  trade_id: number;
+  symbol: string;
+  current_price: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+}
+
+export interface PaperTradingStats {
+  account: PaperAccount;
+  open_positions: number;
+  total_unrealized_pnl: number;
+  equity: number;
+}
+
+export async function fetchPaperAccount(): Promise<PaperAccount> {
+  return fetchWithError(`${API_BASE}/api/paper/account`);
+}
+
+export async function resetPaperAccount(): Promise<PaperAccount> {
+  const res = await fetch(`${API_BASE}/api/paper/reset`, { method: "POST" });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function openPaperTrade(params: {
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  position_usdt: number;
+  stop_loss?: number | null;
+  take_profit_1?: number | null;
+  take_profit_2?: number | null;
+  take_profit_3?: number | null;
+}): Promise<PaperTrade> {
+  const res = await fetch(`${API_BASE}/api/paper/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function closePaperTrade(tradeId: number): Promise<PaperTrade> {
+  const res = await fetch(`${API_BASE}/api/paper/close/${tradeId}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchPaperPositions(): Promise<{
+  positions: PaperTrade[];
+  total: number;
+}> {
+  return fetchWithError(`${API_BASE}/api/paper/positions`);
+}
+
+export async function fetchPaperTradeHistory(params: {
+  limit?: number;
+  offset?: number;
+} = {}): Promise<{ trades: PaperTrade[]; total: number }> {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  return fetchWithError(`${API_BASE}/api/paper/history?${query}`);
+}
+
+export async function fetchPaperTradingStats(): Promise<PaperTradingStats> {
+  return fetchWithError(`${API_BASE}/api/paper/stats`);
+}
+

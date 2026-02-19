@@ -255,6 +255,7 @@ export default function CoinDetailPage() {
             <TradeParamsCard
               tradeParams={signal.trade_params}
               priceLevels={signal.price_levels}
+              symbol={signal.symbol}
             />
           )}
 

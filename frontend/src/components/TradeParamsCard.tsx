@@ -1,14 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { TradeParamsData, PriceLevelsData } from "@/lib/api";
 import { formatPrice } from "@/lib/utils";
+import { Wallet } from "lucide-react";
 
 interface TradeParamsCardProps {
   tradeParams: TradeParamsData;
   priceLevels?: PriceLevelsData;
+  symbol?: string;
 }
 
-export default function TradeParamsCard({ tradeParams, priceLevels }: TradeParamsCardProps) {
+export default function TradeParamsCard({ tradeParams, priceLevels, symbol }: TradeParamsCardProps) {
   const isLong = tradeParams.position_direction === "long";
   const dirColor = isLong ? "var(--long)" : "var(--short)";
   const dirLabel = isLong ? "LONG" : "SHORT";
@@ -118,6 +121,16 @@ export default function TradeParamsCard({ tradeParams, priceLevels }: TradeParam
             </div>
           )}
         </div>
+      )}
+
+      {symbol && (
+        <Link
+          href={`/paper-trading?symbol=${encodeURIComponent(symbol)}&direction=${dirLabel}&sl=${sl}&tp1=${tradeParams.take_profit_1}&tp2=${tradeParams.take_profit_2}&tp3=${tradeParams.take_profit_3}`}
+          className="mt-3 w-full py-2 rounded-card text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 transition-colors flex items-center justify-center gap-1.5"
+        >
+          <Wallet size={14} />
+          모의투자 진입
+        </Link>
       )}
     </div>
   );

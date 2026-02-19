@@ -65,6 +65,7 @@ from analysis.regime import detect_regime
 from analysis.funding import get_futures_signals
 from analysis.market_context import build_market_context
 from db import Database, CandleRepo, SignalRepo, SignalTrackRepo, PredictionRepo, AlertRepo
+from db.paper_trading_repo import PaperTradingRepo
 from data_collector import DataCollector
 from analysis.prediction import generate_prediction
 from analysis.self_learning import SelfLearningEngine
@@ -90,6 +91,7 @@ alert_repo: AlertRepo | None = None
 learning_engine: SelfLearningEngine | None = None
 backtest_engine: BacktestEngine | None = None
 correlation_analyzer: CorrelationAnalyzer | None = None
+paper_trading_repo: PaperTradingRepo | None = None
 
 # WebSocket 연결 관리
 connected_clients: List[WebSocket] = []
@@ -832,9 +834,108 @@ async def run_ohlcv_prewarmer():
         logger.warning("OHLCV 프리워밍 전체 실패: %s", e)
 
 
+async def update_paper_positions():
+    """모의 트레이딩 포지션 P&L 업데이트 + 자동 청산 (10초마다)."""
+    if not paper_trading_repo:
+        return
+    try:
+        open_trades = await paper_trading_repo.get_all_open_positions()
+        if not open_trades:
+            return
+
+        await _refresh_ticker_cache()
+        position_updates = []
+
+        for trade in open_trades:
+            try:
+                symbol = trade["symbol"]
+                ticker = _ticker_cache.get(symbol)
+                if not ticker:
+                    continue
+                current_price = ticker.get("last")
+                if current_price is None:
+                    continue
+
+                entry_price = trade["entry_price"]
+                quantity = trade["quantity"]
+                is_long = trade["direction"] == "LONG"
+
+                if is_long:
+                    unrealized_pnl = (current_price - entry_price) * quantity
+                    unrealized_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                else:
+                    unrealized_pnl = (entry_price - current_price) * quantity
+                    unrealized_pnl_pct = ((entry_price - current_price) / entry_price) * 100
+
+                await paper_trading_repo.update_unrealized_pnl(
+                    trade["id"], current_price,
+                    round(unrealized_pnl, 4),
+                    round(unrealized_pnl_pct, 4),
+                )
+
+                position_updates.append({
+                    "trade_id": trade["id"],
+                    "symbol": symbol,
+                    "current_price": current_price,
+                    "unrealized_pnl": round(unrealized_pnl, 4),
+                    "unrealized_pnl_pct": round(unrealized_pnl_pct, 4),
+                })
+
+                # SL/TP 자동 청산
+                sl = trade.get("stop_loss")
+                tp1 = trade.get("take_profit_1")
+                tp2 = trade.get("take_profit_2")
+                tp3 = trade.get("take_profit_3")
+                close_reason = None
+
+                if is_long:
+                    if sl and current_price <= sl:
+                        close_reason = "HIT_SL"
+                    elif tp3 and current_price >= tp3:
+                        close_reason = "HIT_TP3"
+                    elif tp2 and current_price >= tp2:
+                        close_reason = "HIT_TP2"
+                    elif tp1 and current_price >= tp1:
+                        close_reason = "HIT_TP1"
+                else:
+                    if sl and current_price >= sl:
+                        close_reason = "HIT_SL"
+                    elif tp3 and current_price <= tp3:
+                        close_reason = "HIT_TP3"
+                    elif tp2 and current_price <= tp2:
+                        close_reason = "HIT_TP2"
+                    elif tp1 and current_price <= tp1:
+                        close_reason = "HIT_TP1"
+
+                if close_reason:
+                    closed = await paper_trading_repo.close_trade(
+                        trade["id"], current_price, close_reason
+                    )
+                    logger.info("모의 트레이딩 자동 청산: %s #%d (%s)",
+                                symbol, trade["id"], close_reason)
+                    if connected_clients:
+                        await _broadcast_ws(_safe_dumps({
+                            "type": "paper_trade_closed",
+                            "data": closed,
+                        }))
+
+            except Exception as e:
+                logger.debug("모의 포지션 업데이트 실패 [%s #%d]: %s",
+                             trade.get("symbol"), trade.get("id"), e)
+
+        if position_updates and connected_clients:
+            await _broadcast_ws(_safe_dumps({
+                "type": "paper_position_update",
+                "data": position_updates,
+            }))
+
+    except Exception as e:
+        logger.error("모의 트레이딩 포지션 업데이트 실패: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer
+    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer, paper_trading_repo
 
     # DB 초기화
     await database.connect()
@@ -843,6 +944,7 @@ async def lifespan(app: FastAPI):
     track_repo = SignalTrackRepo(database.client, SUPABASE_SCHEMA)
     prediction_repo = PredictionRepo(database.client, SUPABASE_SCHEMA)
     alert_repo = AlertRepo(database.client, SUPABASE_SCHEMA)
+    paper_trading_repo = PaperTradingRepo(database.client, SUPABASE_SCHEMA)
     learning_engine = SelfLearningEngine(database.client, SUPABASE_SCHEMA)
     backtest_engine = BacktestEngine(database.client, SUPABASE_SCHEMA)
     logger.info("Supabase 데이터베이스 연결 완료")
@@ -879,6 +981,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_correlation_update, "interval", minutes=5)
     scheduler.add_job(run_backfill, "interval", hours=24)
     scheduler.add_job(run_ohlcv_prewarmer, "interval", seconds=10, id="ohlcv_prewarmer", max_instances=1)
+    scheduler.add_job(update_paper_positions, "interval", seconds=10, id="paper_positions", max_instances=1)
     scheduler.start()
     logger.info("멀티TF 스캐너 시작: %s, OHLCV 프리워밍 활성화, 자기학습/백테스트/상관관계 활성화", SCAN_TIMEFRAMES)
 
@@ -1663,6 +1766,128 @@ async def websocket_endpoint(websocket: WebSocket):
             connected_clients.remove(websocket)
         client_subscriptions.pop(websocket, None)
         logger.info("WebSocket 연결 해제 (%d명 접속 중)", len(connected_clients))
+
+
+# ─── 모의 트레이딩 API ──────────────────────────────────────
+
+
+@app.get("/api/paper/account")
+async def get_paper_account():
+    """모의 트레이딩 계좌 조회 (없으면 자동 생성)."""
+    account = await paper_trading_repo.get_or_create_account()
+    return account
+
+
+@app.post("/api/paper/reset")
+async def reset_paper_account():
+    """모의 트레이딩 계좌 초기화."""
+    account = await paper_trading_repo.get_or_create_account()
+    result = await paper_trading_repo.reset_account(account["id"])
+    return result
+
+
+@app.post("/api/paper/open")
+async def open_paper_trade(request: Request):
+    """포지션 진입 (시장가)."""
+    body = await request.json()
+    symbol = _normalize_symbol(body["symbol"])
+    direction = body["direction"]
+    position_usdt = float(body["position_usdt"])
+
+    await _refresh_ticker_cache()
+    ticker = _ticker_cache.get(symbol)
+    if not ticker or not ticker.get("last"):
+        raise HTTPException(status_code=400, detail="현재가 조회 실패")
+    entry_price = ticker["last"]
+    quantity = position_usdt / entry_price
+
+    account = await paper_trading_repo.get_or_create_account()
+    if account["balance"] < position_usdt:
+        raise HTTPException(status_code=400, detail="잔고 부족")
+
+    trade = await paper_trading_repo.open_trade(
+        account_id=account["id"],
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        position_usdt=position_usdt,
+        quantity=quantity,
+        stop_loss=body.get("stop_loss"),
+        take_profit_1=body.get("take_profit_1"),
+        take_profit_2=body.get("take_profit_2"),
+        take_profit_3=body.get("take_profit_3"),
+    )
+
+    if connected_clients:
+        await _broadcast_ws(_safe_dumps({
+            "type": "paper_trade_opened",
+            "data": trade,
+        }))
+
+    return trade
+
+
+@app.post("/api/paper/close/{trade_id}")
+async def close_paper_trade(trade_id: int):
+    """포지션 수동 청산 (시장가)."""
+    trade = await paper_trading_repo.get_trade_by_id(trade_id)
+    if not trade:
+        raise HTTPException(status_code=404, detail="트레이드를 찾을 수 없습니다")
+    if trade["status"] != "OPEN":
+        raise HTTPException(status_code=400, detail="이미 종료된 포지션입니다")
+
+    await _refresh_ticker_cache()
+    ticker = _ticker_cache.get(trade["symbol"])
+    if not ticker or not ticker.get("last"):
+        raise HTTPException(status_code=400, detail="현재가 조회 실패")
+
+    result = await paper_trading_repo.close_trade(
+        trade_id=trade_id,
+        close_price=ticker["last"],
+        close_reason="MANUAL",
+    )
+
+    if connected_clients:
+        await _broadcast_ws(_safe_dumps({
+            "type": "paper_trade_closed",
+            "data": result,
+        }))
+
+    return result
+
+
+@app.get("/api/paper/positions")
+async def get_paper_positions():
+    """열린 포지션 목록."""
+    account = await paper_trading_repo.get_or_create_account()
+    positions = await paper_trading_repo.get_open_positions(account["id"])
+    return {"positions": positions, "total": len(positions)}
+
+
+@app.get("/api/paper/history")
+async def get_paper_trade_history(
+    limit: int = Query(default=20, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """거래 히스토리 (종료된 트레이드)."""
+    account = await paper_trading_repo.get_or_create_account()
+    trades = await paper_trading_repo.get_trade_history(account["id"], limit=limit, offset=offset)
+    total = await paper_trading_repo.get_trade_count(account["id"])
+    return {"trades": trades, "total": total}
+
+
+@app.get("/api/paper/stats")
+async def get_paper_trading_stats():
+    """트레이딩 통계."""
+    account = await paper_trading_repo.get_or_create_account()
+    positions = await paper_trading_repo.get_open_positions(account["id"])
+    total_unrealized = sum(p.get("unrealized_pnl", 0) for p in positions)
+    return {
+        "account": account,
+        "open_positions": len(positions),
+        "total_unrealized_pnl": round(total_unrealized, 2),
+        "equity": round(account["balance"] + total_unrealized, 2),
+    }
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Signal, Alert, Prediction, PredictionProgress } from "@/lib/api";
+import { Signal, Alert, Prediction, PredictionProgress, PaperTrade, PaperPositionUpdate } from "@/lib/api";
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 const MAX_RECONNECT_DELAY = 30000;
@@ -17,6 +17,9 @@ export function useWebSocket() {
   const [predictionCreated, setPredictionCreated] = useState<Prediction | null>(null);
   const [predictionProgress, setPredictionProgress] = useState<PredictionProgress[]>([]);
   const [predictionVerified, setPredictionVerified] = useState<Prediction | null>(null);
+  const [paperTradeOpened, setPaperTradeOpened] = useState<PaperTrade | null>(null);
+  const [paperTradeClosed, setPaperTradeClosed] = useState<PaperTrade | null>(null);
+  const [paperPositionUpdates, setPaperPositionUpdates] = useState<PaperPositionUpdate[]>([]);
   const reconnectTimer = useRef<NodeJS.Timeout>();
   const reconnectAttempts = useRef(0);
 
@@ -53,6 +56,12 @@ export function useWebSocket() {
           setPredictionProgress(Array.isArray(message.data) ? message.data : []);
         } else if (message.type === "prediction_verified") {
           setPredictionVerified(message.data);
+        } else if (message.type === "paper_trade_opened") {
+          setPaperTradeOpened(message.data);
+        } else if (message.type === "paper_trade_closed") {
+          setPaperTradeClosed(message.data);
+        } else if (message.type === "paper_position_update") {
+          setPaperPositionUpdates(Array.isArray(message.data) ? message.data : []);
         }
       } catch (e) {
         console.error("메시지 파싱 오류:", e);
@@ -116,6 +125,9 @@ export function useWebSocket() {
     };
   }, [connect]);
 
+  const clearPaperTradeOpened = useCallback(() => setPaperTradeOpened(null), []);
+  const clearPaperTradeClosed = useCallback(() => setPaperTradeClosed(null), []);
+
   return {
     connected,
     signalsByTf,
@@ -126,11 +138,16 @@ export function useWebSocket() {
     predictionCreated,
     predictionProgress,
     predictionVerified,
+    paperTradeOpened,
+    paperTradeClosed,
+    paperPositionUpdates,
     subscribe,
     unsubscribe,
     clearLatestAlert,
     clearPredictionCreated,
     clearPredictionVerified,
+    clearPaperTradeOpened,
+    clearPaperTradeClosed,
     resetUnreadAlerts,
   };
 }
