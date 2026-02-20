@@ -1147,6 +1147,38 @@ async def health_check():
     return {"status": status, "checks": checks}
 
 
+@app.get("/api/deploy-status")
+async def deploy_status():
+    """배포 웹훅 상태 + Docker 컨테이너 상태 조회 (디버깅용)"""
+    import subprocess as _sp
+    result = {}
+    # 1) Docker ps
+    try:
+        r = _sp.run(["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"],
+                     capture_output=True, text=True, timeout=10)
+        result["containers"] = r.stdout.strip().split("\n") if r.stdout.strip() else []
+        result["docker_available"] = True
+    except Exception as e:
+        result["docker_available"] = False
+        result["docker_error"] = str(e)
+    # 2) Try webhook status
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as hc:
+            for host in ["172.17.0.1", "host.docker.internal", "localhost"]:
+                try:
+                    resp = await hc.get(f"http://{host}:9000/status")
+                    if resp.status_code == 200:
+                        result["webhook_status"] = resp.json()
+                        result["webhook_host"] = host
+                        break
+                except Exception:
+                    continue
+    except Exception as e:
+        result["webhook_error"] = str(e)
+    return result
+
+
 @app.get("/api/markets")
 async def get_markets():
     try:
