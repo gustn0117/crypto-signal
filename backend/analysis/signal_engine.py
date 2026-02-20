@@ -579,6 +579,76 @@ class SignalEngine:
             if atr is not None and not atr.empty:
                 snapshot["atr"] = round(float(atr.dropna().iloc[-1]), 6)
 
+            # ── 추가 지표 (예측 엔진 v4용) ──
+
+            # ADX (추세 강도: 0~100, >25 = 강한 추세)
+            adx = ta.adx(high, low, close, length=14)
+            if adx is not None and not adx.empty:
+                adx_col = [c for c in adx.columns if "ADX_" in c and "DM" not in c]
+                if adx_col:
+                    snapshot["adx"] = round(float(adx[adx_col[0]].dropna().iloc[-1]), 2)
+
+            # 스토캐스틱 (%K, %D: 0~100)
+            stoch = ta.stoch(high, low, close)
+            if stoch is not None and not stoch.empty:
+                k_col = [c for c in stoch.columns if "STOCHk" in c]
+                d_col = [c for c in stoch.columns if "STOCHd" in c]
+                if k_col and d_col:
+                    snapshot["stoch_k"] = round(float(stoch[k_col[0]].dropna().iloc[-1]), 2)
+                    snapshot["stoch_d"] = round(float(stoch[d_col[0]].dropna().iloc[-1]), 2)
+
+            # MFI (Money Flow Index: 0~100, 거래량 가중 RSI)
+            mfi = ta.mfi(high, low, close, volume, length=14)
+            if mfi is not None and not mfi.empty:
+                snapshot["mfi"] = round(float(mfi.dropna().iloc[-1]), 2)
+
+            # 일목균형 (구름 위/아래 위치)
+            ichimoku = ta.ichimoku(high, low, close)
+            if ichimoku is not None and isinstance(ichimoku, tuple) and len(ichimoku) >= 1:
+                ich_df = ichimoku[0]
+                if ich_df is not None and not ich_df.empty:
+                    span_a_col = [c for c in ich_df.columns if "ISA" in c]
+                    span_b_col = [c for c in ich_df.columns if "ISB" in c]
+                    if span_a_col and span_b_col:
+                        sa = ich_df[span_a_col[0]].dropna()
+                        sb = ich_df[span_b_col[0]].dropna()
+                        if not sa.empty and not sb.empty:
+                            cloud_top = max(float(sa.iloc[-1]), float(sb.iloc[-1]))
+                            cloud_bot = min(float(sa.iloc[-1]), float(sb.iloc[-1]))
+                            cp = float(close.iloc[-1])
+                            if cp > cloud_top:
+                                snapshot["ichimoku_position"] = "above"  # 구름 위 (강세)
+                            elif cp < cloud_bot:
+                                snapshot["ichimoku_position"] = "below"  # 구름 아래 (약세)
+                            else:
+                                snapshot["ichimoku_position"] = "inside"  # 구름 안 (불확실)
+
+            # EMA 20/50 기울기 (모멘텀 방향)
+            ema20 = ta.ema(close, length=20)
+            if ema20 is not None and not ema20.empty and len(ema20.dropna()) >= 5:
+                ema_vals = ema20.dropna()
+                ema_slope = (float(ema_vals.iloc[-1]) - float(ema_vals.iloc[-5])) / float(ema_vals.iloc[-5]) * 100
+                snapshot["ema20_slope_pct"] = round(ema_slope, 4)
+
+            # 변동성 수축/확장 (볼린저 밴드 폭 변화)
+            if bbands is not None and not bbands.empty and upper_col and lower_col:
+                bw_col = [c for c in bbands.columns if "BBB" in c]
+                if bw_col:
+                    bw = bbands[bw_col[0]].dropna()
+                    if len(bw) >= 10:
+                        bw_now = float(bw.iloc[-1])
+                        bw_avg = float(bw.iloc[-10:].mean())
+                        snapshot["bb_squeeze"] = round(bw_now / bw_avg, 3) if bw_avg > 0 else 1.0
+
+            # 시장 맥락 (Fear & Greed, 감성)
+            if self._market_context:
+                fg = self._market_context.get("fear_greed_value")
+                if fg is not None:
+                    snapshot["fear_greed"] = fg
+                sentiment = self._market_context.get("sentiment_score")
+                if sentiment is not None:
+                    snapshot["sentiment_score"] = round(sentiment, 3)
+
         except Exception as e:
             logger.warning("indicator_snapshot 생성 실패: %s", e)
 

@@ -259,6 +259,84 @@ def _calculate_base_drift(
     vol_multiplier = 1.0 + min(max(vol_ratio - 1.0, 0), 1.0) * 0.3
     drift *= vol_multiplier
 
+    # ── 추가 지표 (v4) ──
+
+    # ADX: 추세 강도 → 강한 추세(>25)면 드리프트 확대, 약한 추세(<15)면 축소
+    adx = snap.get("adx")
+    if adx is not None:
+        if adx > 40:
+            drift *= 1.25  # 매우 강한 추세
+        elif adx > 25:
+            drift *= 1.10  # 강한 추세
+        elif adx < 15:
+            drift *= 0.7   # 추세 없음 → 평균회귀 환경
+
+    # 스토캐스틱: RSI와 함께 과매수/과매도 이중 확인
+    stoch_k = snap.get("stoch_k")
+    if stoch_k is not None:
+        if stoch_k < 20 and (rsi is None or rsi < 35):
+            drift += 0.05 * atr  # 이중 과매도 → 강한 반등 기대
+        elif stoch_k > 80 and (rsi is None or rsi > 65):
+            drift -= 0.05 * atr  # 이중 과매수 → 강한 조정 기대
+
+    # MFI (거래량 가중 RSI): 자금 흐름 방향
+    mfi = snap.get("mfi")
+    if mfi is not None:
+        if mfi < 20:
+            drift += 0.04 * atr  # 극도의 매도 압력 후 반등
+        elif mfi > 80:
+            drift -= 0.04 * atr  # 극도의 매수 압력 후 조정
+        elif is_long and mfi > 50:
+            drift += 0.02 * atr  # 자금 유입 + LONG 시그널 합류
+        elif is_short and mfi < 50:
+            drift -= 0.02 * atr  # 자금 유출 + SHORT 시그널 합류
+
+    # 일목균형 구름 위치
+    ichi_pos = snap.get("ichimoku_position")
+    if ichi_pos:
+        if ichi_pos == "above" and is_long:
+            drift *= 1.08  # 구름 위 + LONG → 확신 강화
+        elif ichi_pos == "below" and is_short:
+            drift *= 1.08  # 구름 아래 + SHORT → 확신 강화
+        elif ichi_pos == "above" and is_short:
+            drift *= 0.85  # 구름 위인데 SHORT → 역추세, 감쇠
+        elif ichi_pos == "below" and is_long:
+            drift *= 0.85  # 구름 아래인데 LONG → 역추세, 감쇠
+        elif ichi_pos == "inside":
+            drift *= 0.9   # 구름 안 = 불확실 → 드리프트 축소
+
+    # EMA 기울기: 모멘텀 가속/감속
+    ema_slope = snap.get("ema20_slope_pct")
+    if ema_slope is not None:
+        if is_long and ema_slope > 0.1:
+            drift += min(ema_slope * 0.02, 0.06) * atr  # 상승 모멘텀
+        elif is_short and ema_slope < -0.1:
+            drift -= min(abs(ema_slope) * 0.02, 0.06) * atr  # 하락 모멘텀
+        elif is_long and ema_slope < -0.2:
+            drift *= 0.85  # 하락 모멘텀인데 LONG → 감쇠
+        elif is_short and ema_slope > 0.2:
+            drift *= 0.85  # 상승 모멘텀인데 SHORT → 감쇠
+
+    # Fear & Greed 지수: 극단적 감성 → 평균회귀 또는 확신 강화
+    fg = snap.get("fear_greed")
+    if fg is not None:
+        if fg <= 15:  # 극도의 공포
+            drift += 0.04 * atr  # 반등 기대 (역발상)
+        elif fg >= 85:  # 극도의 탐욕
+            drift -= 0.04 * atr  # 조정 기대 (역발상)
+        elif fg <= 30 and is_long:
+            drift += 0.02 * atr  # 공포 속 LONG → 역발상 부스트
+        elif fg >= 70 and is_short:
+            drift -= 0.02 * atr  # 탐욕 속 SHORT → 역발상 부스트
+
+    # 감성 점수 (뉴스): 시그널 방향과 일치하면 부스트
+    sentiment = snap.get("sentiment_score")
+    if sentiment is not None:
+        if is_long and sentiment > 0.3:
+            drift += min(sentiment * 0.04, 0.05) * atr
+        elif is_short and sentiment < -0.3:
+            drift -= min(abs(sentiment) * 0.04, 0.05) * atr
+
     return drift
 
 
@@ -421,24 +499,35 @@ def _apply_confluence_mtf(drift: float, snap: dict) -> float:
 
 
 def _apply_anomaly_volatility(step_vol: float, snap: dict) -> float:
-    """이상치 감지 시 변동성 확대.
+    """이상치 감지 + 볼린저 밴드 squeeze → 변동성 조정.
 
     이상치 = 비정상적 거래량/가격 변동 → 예측 불확실성 증가 → 신뢰 구간 확대.
+    BB squeeze = 변동성 수축 후 확장 준비 → 폭발적 움직임 가능.
     """
     anomaly = snap.get("anomaly")
-    if not anomaly:
-        return step_vol
+    if anomaly:
+        if anomaly.get("is_anomaly"):
+            score = abs(anomaly.get("score", 0.0))
+            vol_expansion = 1.0 + min(score, 1.0) * 0.4  # 최대 1.4배
+            step_vol *= vol_expansion
+            logger.debug("이상치 감지: 변동성 %.1f%% 확대", (vol_expansion - 1) * 100)
 
-    if anomaly.get("is_anomaly"):
-        score = abs(anomaly.get("score", 0.0))
-        vol_expansion = 1.0 + min(score, 1.0) * 0.4  # 최대 1.4배
-        step_vol *= vol_expansion
-        logger.debug("이상치 감지: 변동성 %.1f%% 확대", (vol_expansion - 1) * 100)
+        # 거래량 급등 (정상이라도) → 약간의 변동성 확대
+        vol_ratio = anomaly.get("vol_ratio", 1.0)
+        if vol_ratio > 2.0:
+            step_vol *= 1.0 + min(vol_ratio - 2.0, 2.0) * 0.1  # 최대 1.2배
 
-    # 거래량 급등 (정상이라도) → 약간의 변동성 확대
-    vol_ratio = anomaly.get("vol_ratio", 1.0)
-    if vol_ratio > 2.0:
-        step_vol *= 1.0 + min(vol_ratio - 2.0, 2.0) * 0.1  # 최대 1.2배
+    # 볼린저 밴드 squeeze: 밴드 폭이 평균 대비 좁으면 곧 큰 움직임 가능
+    bb_squeeze = snap.get("bb_squeeze")
+    if bb_squeeze is not None:
+        if bb_squeeze < 0.6:
+            # 강한 squeeze: 변동성 수축 → 조만간 확장 예상 → 신뢰 구간 확대
+            step_vol *= 1.25
+        elif bb_squeeze < 0.8:
+            step_vol *= 1.10
+        elif bb_squeeze > 1.5:
+            # 이미 변동성 확장 중: 현재 변동성 유지
+            step_vol *= 1.05
 
     return step_vol
 

@@ -41,16 +41,34 @@ function formatDeployTime(isoStr: string): string {
   return `${mm}/${dd} ${hh}:${mi}`;
 }
 
+const FRONTEND_BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || null;
+
+function DeployInfo({ backendTime, collapsed }: { backendTime: string | null; collapsed?: boolean }) {
+  if (collapsed) return null;
+  if (!backendTime && !FRONTEND_BUILD_TIME) return null;
+
+  return (
+    <div className="px-3 py-2 text-[10px] text-muted border-t space-y-0.5" style={{ borderColor: "var(--border)" }}>
+      {backendTime && (
+        <div>BE: {formatDeployTime(backendTime)}</div>
+      )}
+      {FRONTEND_BUILD_TIME && (
+        <div>FE: {formatDeployTime(FRONTEND_BUILD_TIME)}</div>
+      )}
+    </div>
+  );
+}
+
 export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
-  const [deployTime, setDeployTime] = useState<string | null>(null);
+  const [backendTime, setBackendTime] = useState<string | null>(null);
 
   useEffect(() => {
     fetchHealth()
       .then((data) => {
         const started = data.checks?.server_started_at;
-        if (typeof started === "string") setDeployTime(started);
+        if (typeof started === "string") setBackendTime(started);
       })
       .catch(() => {});
   }, []);
@@ -118,11 +136,7 @@ export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
               })}
             </ul>
           </nav>
-          {deployTime && (
-            <div className="px-5 py-3 text-[10px] text-muted border-t" style={{ borderColor: "var(--border)" }}>
-              배포: {formatDeployTime(deployTime)}
-            </div>
-          )}
+          <DeployInfo backendTime={backendTime} />
         </aside>
       </>
     );
@@ -182,11 +196,7 @@ export default function Sidebar({ isDesktop, isOpen, onClose }: SidebarProps) {
       </nav>
 
       {/* Deploy time */}
-      {deployTime && !collapsed && (
-        <div className="px-3 py-2 text-[10px] text-muted border-t" style={{ borderColor: "var(--border)" }}>
-          배포: {formatDeployTime(deployTime)}
-        </div>
-      )}
+      <DeployInfo backendTime={backendTime} collapsed={collapsed} />
 
       {/* Collapse toggle */}
       <button
