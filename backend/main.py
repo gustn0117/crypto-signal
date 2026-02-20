@@ -341,12 +341,13 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
 
     horizon = DEFAULT_HORIZON_CANDLES.get(timeframe, 24)
 
+    pl = signal.price_levels or {}
     prediction_data = generate_prediction(
         signal_direction=signal.signal,
         confidence=signal.confidence,
         entry_price=signal.current_price,
         trade_params=signal.trade_params,
-        price_levels=signal.price_levels,
+        price_levels=pl,
         timeframe=timeframe,
         horizon_candles=horizon,
         indicator_snapshot=signal.indicator_snapshot,
@@ -365,12 +366,12 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         signal_direction=signal.signal,
         confidence=signal.confidence,
         entry_price=signal.current_price,
-        stop_loss=tp.get("stop_loss") or None,
-        take_profit_1=tp.get("take_profit_1") or None,
-        take_profit_2=tp.get("take_profit_2") or None,
-        take_profit_3=tp.get("take_profit_3") or None,
-        atr=signal.price_levels.get("atr", 0),
-        atr_percent=signal.price_levels.get("atr_percent", 0),
+        stop_loss=tp.get("stop_loss") or 0,
+        take_profit_1=tp.get("take_profit_1") or 0,
+        take_profit_2=tp.get("take_profit_2") or 0,
+        take_profit_3=tp.get("take_profit_3") or 0,
+        atr=pl.get("atr", 0),
+        atr_percent=pl.get("atr_percent", 0),
         predicted_path=prediction_data["predicted_path"],
         upper_bound_path=prediction_data["upper_bound_path"],
         lower_bound_path=prediction_data["lower_bound_path"],
@@ -1626,12 +1627,13 @@ async def create_prediction(
         if len(df) >= 100:
             hist_returns = df["close"].pct_change().dropna().values
 
+        pl = signal.price_levels or {}
         prediction_data = generate_prediction(
             signal_direction=signal.signal,
             confidence=signal.confidence,
             entry_price=signal.current_price,
             trade_params=signal.trade_params,
-            price_levels=signal.price_levels,
+            price_levels=pl,
             timeframe=timeframe,
             horizon_candles=horizon,
             indicator_snapshot=signal.indicator_snapshot,
@@ -1650,12 +1652,12 @@ async def create_prediction(
             signal_direction=signal.signal,
             confidence=signal.confidence,
             entry_price=signal.current_price,
-            stop_loss=tp.get("stop_loss") or None,
-            take_profit_1=tp.get("take_profit_1") or None,
-            take_profit_2=tp.get("take_profit_2") or None,
-            take_profit_3=tp.get("take_profit_3") or None,
-            atr=signal.price_levels.get("atr", 0),
-            atr_percent=signal.price_levels.get("atr_percent", 0),
+            stop_loss=tp.get("stop_loss") or 0,
+            take_profit_1=tp.get("take_profit_1") or 0,
+            take_profit_2=tp.get("take_profit_2") or 0,
+            take_profit_3=tp.get("take_profit_3") or 0,
+            atr=pl.get("atr", 0),
+            atr_percent=pl.get("atr_percent", 0),
             predicted_path=prediction_data["predicted_path"],
             upper_bound_path=prediction_data["upper_bound_path"],
             lower_bound_path=prediction_data["lower_bound_path"],
