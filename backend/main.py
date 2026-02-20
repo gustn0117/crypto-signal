@@ -1149,21 +1149,11 @@ async def health_check():
 
 @app.get("/api/deploy-status")
 async def deploy_status():
-    """배포 웹훅 상태 + Docker 컨테이너 상태 조회 (디버깅용)"""
-    import subprocess as _sp
+    """배포 웹훅 상태 + 프론트엔드 연결 테스트 (디버깅용)"""
     result = {}
-    # 1) Docker ps
+    import httpx
+    # 1) Webhook status (via Docker host gateway)
     try:
-        r = _sp.run(["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"],
-                     capture_output=True, text=True, timeout=10)
-        result["containers"] = r.stdout.strip().split("\n") if r.stdout.strip() else []
-        result["docker_available"] = True
-    except Exception as e:
-        result["docker_available"] = False
-        result["docker_error"] = str(e)
-    # 2) Try webhook status
-    try:
-        import httpx
         async with httpx.AsyncClient(timeout=5) as hc:
             for host in ["172.17.0.1", "host.docker.internal", "localhost"]:
                 try:
@@ -1176,6 +1166,33 @@ async def deploy_status():
                     continue
     except Exception as e:
         result["webhook_error"] = str(e)
+    # 2) Frontend connectivity test (same docker network)
+    frontend_tests = {}
+    async with httpx.AsyncClient(timeout=5) as hc:
+        for url in [
+            "http://coin-frontend:3000/",
+            "http://frontend:3000/",
+            "http://172.17.0.1:3001/",
+            "http://localhost:3001/",
+        ]:
+            try:
+                resp = await hc.get(url)
+                frontend_tests[url] = {"status": resp.status_code, "length": len(resp.text)}
+            except Exception as e:
+                frontend_tests[url] = {"error": str(e)}
+    result["frontend_tests"] = frontend_tests
+    # 3) Docker socket API (if available)
+    try:
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds="/var/run/docker.sock"), timeout=5) as hc:
+            resp = await hc.get("http://localhost/containers/json?all=true")
+            if resp.status_code == 200:
+                containers = resp.json()
+                result["containers"] = [
+                    {"name": c.get("Names", []), "state": c.get("State"), "status": c.get("Status"), "image": c.get("Image")}
+                    for c in containers
+                ]
+    except Exception as e:
+        result["docker_socket"] = str(e)
     return result
 
 
