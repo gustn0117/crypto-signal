@@ -36,6 +36,11 @@ from .levels import calculate_levels, PriceLevels
 from .trade_params import calculate_trade_params, TradeParams
 from .mtf import check_higher_tf, check_multi_tf, MTFConfirmation, SECOND_HIGHER_TF_MAP
 from .regime import detect_regime
+from .anomaly import AnomalyDetector
+from .pattern_matcher import PatternMatcher
+from .ml_predictor import LSTMPredictor
+from .orderbook import analyze_orderbook
+from .ml_predictor import SEQUENCE_LENGTH as SEQUENCE_LENGTH_FOR_ML
 import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
@@ -144,6 +149,11 @@ class SignalEngine:
     def __init__(self):
         self._adaptive_weights: dict | None = None
         self._market_context: dict | None = None
+        # Phase 2/3 분석 모듈
+        self._anomaly_detector = AnomalyDetector()
+        self._pattern_matcher = PatternMatcher()
+        self._ml_predictor = LSTMPredictor()
+        self._ml_predictor.load_weights()
 
     def set_adaptive_weights(self, weights: dict | None):
         """자기학습 엔진에서 계산된 적응형 가중치를 설정."""
@@ -167,6 +177,7 @@ class SignalEngine:
         higher_tf_df: Optional[pd.DataFrame] = None,
         futures_data: Optional[List] = None,
         higher_tf_dfs: Optional[dict] = None,
+        orderbook_data: Optional[dict] = None,
     ) -> TradeSignal:
         """종합 분석 수행 후 TradeSignal 반환"""
         current_price = df["close"].iloc[-1]
@@ -246,6 +257,14 @@ class SignalEngine:
         # 9) 시장 맥락 보정 (BTC 도미넌스, Fear & Greed 등)
         if self._market_context and symbol != "BTC/USDT":
             confidence = self._apply_market_context(signal, confidence)
+
+        # 9.5) Phase 2/3 모듈 보정
+        try:
+            confidence = self._apply_advanced_modules(
+                df, signal, confidence, timeframe, orderbook_data, current_price
+            )
+        except Exception as e:
+            logger.debug("고급 분석 모듈 보정 실패: %s", e)
 
         # 10) 가격 레벨 계산
         levels = calculate_levels(df)
@@ -371,6 +390,105 @@ class SignalEngine:
         onchain_mod = ctx.get("onchain_modifier", 0.0)
         if onchain_mod != 0.0:
             modifier += onchain_mod
+
+        return max(0.0, min(1.0, confidence + modifier))
+
+    def _apply_advanced_modules(
+        self,
+        df: pd.DataFrame,
+        signal: str,
+        confidence: float,
+        timeframe: str,
+        orderbook_data: Optional[dict],
+        current_price: float,
+    ) -> float:
+        """Phase 2/3 분석 모듈로 신뢰도 보정."""
+        modifier = 0.0
+
+        # 1) 오더북 불균형 분석
+        if orderbook_data:
+            ob_result = analyze_orderbook(orderbook_data, current_price)
+            if ob_result and ob_result.signal != "neutral":
+                # 시그널 방향과 오더북 방향이 일치하면 부스트
+                is_long = "LONG" in signal
+                if (is_long and ob_result.signal == "long") or (not is_long and ob_result.signal == "short"):
+                    modifier += ob_result.strength * 0.05  # 최대 +0.04
+                elif (is_long and ob_result.signal == "short") or (not is_long and ob_result.signal == "long"):
+                    modifier -= ob_result.strength * 0.03  # 최대 -0.024
+
+        # 2) 이상치 탐지
+        if len(df) >= 21:
+            vol = df["volume"]
+            close = df["close"]
+            avg_vol = float(vol.iloc[-21:-1].mean())
+            current_vol = float(vol.iloc[-1])
+            vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
+
+            atr_series = ta.atr(df["high"], df["low"], close, length=14)
+            atr_val = float(atr_series.dropna().iloc[-1]) if atr_series is not None and not atr_series.empty else 0
+            atr_ratio = atr_val / float(close.iloc[-1]) * 100 if float(close.iloc[-1]) > 0 else 0
+
+            price_change = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
+
+            anomaly = self._anomaly_detector.detect(vol_ratio, atr_ratio, price_change)
+            anom_mod = self._anomaly_detector.get_anomaly_modifier(anomaly)
+            if anom_mod != 0.0:
+                modifier += anom_mod
+                logger.debug("이상치 보정: score=%.3f, mod=%.3f", anomaly.anomaly_score, anom_mod)
+
+        # 3) 패턴 매칭 (데이터 충분할 때만)
+        if signal != "NEUTRAL" and len(df) >= 60:
+            close_list = df["close"].tolist()
+            # 패턴 DB 구축 (매 호출마다 하지 않고 충분한 데이터일 때만)
+            if len(self._pattern_matcher._pattern_db) < 100 and len(close_list) >= 200:
+                self._pattern_matcher.build_from_candles(close_list)
+            pattern_result = self._pattern_matcher.find_similar(close_list)
+            pat_mod = self._pattern_matcher.get_confidence_modifier(pattern_result, signal)
+            if pat_mod != 0.0:
+                modifier += pat_mod
+
+        # 4) ML 예측 (LSTM)
+        if signal != "NEUTRAL" and len(df) >= SEQUENCE_LENGTH_FOR_ML:
+            try:
+                close_list = df["close"].tolist()
+                vol_list = df["volume"].tolist()
+
+                rsi_s = ta.rsi(df["close"], length=14)
+                rsi_list = rsi_s.fillna(50).tolist() if rsi_s is not None else [50.0] * len(df)
+
+                macd_df = ta.macd(df["close"])
+                macd_list = [0.0] * len(df)
+                if macd_df is not None:
+                    hist_cols = [c for c in macd_df.columns if "MACDh" in c or "h_" in c]
+                    if hist_cols:
+                        macd_list = macd_df[hist_cols[0]].fillna(0).tolist()
+
+                bbands = ta.bbands(df["close"], length=20)
+                bb_list = [0.5] * len(df)
+                if bbands is not None:
+                    upper_cols = [c for c in bbands.columns if "BBU" in c]
+                    lower_cols = [c for c in bbands.columns if "BBL" in c]
+                    if upper_cols and lower_cols:
+                        bbu = bbands[upper_cols[0]].fillna(method="ffill")
+                        bbl = bbands[lower_cols[0]].fillna(method="ffill")
+                        bb_pos = (df["close"] - bbl) / (bbu - bbl + 1e-10)
+                        bb_list = bb_pos.clip(0, 1).fillna(0.5).tolist()
+
+                atr_s = ta.atr(df["high"], df["low"], df["close"], length=14)
+                atr_list = [0.0] * len(df)
+                if atr_s is not None:
+                    atr_ratio_s = atr_s / df["close"] * 100
+                    atr_list = atr_ratio_s.fillna(0).tolist()
+
+                ml_pred = self._ml_predictor.predict_direction(
+                    close_list, vol_list, rsi_list, macd_list, bb_list, atr_list
+                )
+                ml_mod = self._ml_predictor.get_ensemble_modifier(ml_pred, signal)
+                if ml_mod != 0.0:
+                    modifier += ml_mod
+                    logger.debug("ML 보정: up=%.2f down=%.2f mod=%.3f", ml_pred["up"], ml_pred["down"], ml_mod)
+            except Exception as e:
+                logger.debug("ML 예측 실패: %s", e)
 
         return max(0.0, min(1.0, confidence + modifier))
 

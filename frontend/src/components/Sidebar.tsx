@@ -14,6 +14,7 @@ import {
   BarChart3,
   X,
   Wallet,
+  Settings,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -21,7 +22,8 @@ const NAV_ITEMS = [
   { href: "/predictions", label: "예측", icon: Target },
   { href: "/paper-trading", label: "모의투자", icon: Wallet },
   { href: "/history", label: "히스토리", icon: History },
-  { href: "/alerts", label: "알림 설정", icon: Bell },
+  { href: "/alerts", label: "알림", icon: Bell },
+  { href: "/settings", label: "설정", icon: Settings },
 ];
 
 interface SidebarProps {

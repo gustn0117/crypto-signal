@@ -57,7 +57,7 @@ from config import (
     ANALYSIS_CANDLE_LIMIT, REALTIME_CANDLE_LIMIT, REALTIME_HIGHER_TF_LIMIT,
     SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES, SCALP_SYMBOLS_LIMIT,
     BACKFILL_DAYS, BACKFILL_DAYS_1M, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DISCORD_WEBHOOK_URL, CRYPTOPANIC_API_KEY,
+    CRYPTOPANIC_API_KEY,
     AUTO_TRADE_ENABLED, AUTO_TRADE_MAX_POSITIONS, AUTO_TRADE_MAX_PCT,
 )
 from exchange import AsyncBinanceClient
@@ -75,7 +75,6 @@ from analysis.backtest import BacktestEngine
 from analysis.correlation import CorrelationAnalyzer
 from analysis.indicator_series import compute_indicator_series
 from analysis.portfolio_risk import PortfolioRiskManager
-from notifier import notify_alert
 from trade_executor import TradeExecutor
 
 # 로깅 초기화
@@ -159,13 +158,14 @@ def _validate_timeframe(timeframe: str) -> str:
 async def _broadcast_ws(message: str):
     """모든 WS 클라이언트에 메시지 브로드캐스트"""
     disconnected = []
-    for ws in connected_clients:
+    for ws in list(connected_clients):  # 복사본으로 순회 (race condition 방지)
         try:
             await ws.send_text(message)
         except Exception:
             disconnected.append(ws)
     for ws in disconnected:
-        connected_clients.remove(ws)
+        if ws in connected_clients:
+            connected_clients.remove(ws)
         client_subscriptions.pop(ws, None)
 
 
@@ -237,12 +237,6 @@ async def _push_transition_alert(transition: dict):
 
     await _broadcast_ws(_safe_dumps({"type": "alert", "data": alert}))
 
-    # Telegram/Discord 알림
-    try:
-        await notify_alert(alert)
-    except Exception as e:
-        logger.debug("외부 알림 전송 실패: %s", e)
-
 
 async def push_subscription_updates():
     """구독 중인 클라이언트에게 실시간 분석 push"""
@@ -281,14 +275,15 @@ async def push_subscription_updates():
                             "confirmed_at": active_track["confirmed_at"],
                             "peak_confidence": active_track["peak_confidence"],
                         }
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("구독 트랙 조회 실패 [%s]: %s", symbol, e)
 
             await ws.send_text(_safe_dumps({
                 "type": "subscription_update",
                 "data": signal_data
             }))
-        except Exception:
+        except Exception as e:
+            logger.debug("구독 업데이트 전송 실패: %s", e)
             disconnected.append(ws)
     for ws in disconnected:
         client_subscriptions.pop(ws, None)
@@ -309,8 +304,8 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
     if higher_tf != timeframe:
         try:
             higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("자동예측 상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
     signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
 
@@ -370,10 +365,10 @@ async def _auto_generate_prediction(symbol: str, timeframe: str):
         signal_direction=signal.signal,
         confidence=signal.confidence,
         entry_price=signal.current_price,
-        stop_loss=tp.get("stop_loss", 0),
-        take_profit_1=tp.get("take_profit_1", 0),
-        take_profit_2=tp.get("take_profit_2", 0),
-        take_profit_3=tp.get("take_profit_3", 0),
+        stop_loss=tp.get("stop_loss") or None,
+        take_profit_1=tp.get("take_profit_1") or None,
+        take_profit_2=tp.get("take_profit_2") or None,
+        take_profit_3=tp.get("take_profit_3") or None,
         atr=signal.price_levels.get("atr", 0),
         atr_percent=signal.price_levels.get("atr_percent", 0),
         predicted_path=prediction_data["predicted_path"],
@@ -492,8 +487,8 @@ async def scheduled_scan_tf(timeframe: str):
                         "type": "signal_transition",
                         "data": tr
                     }))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("signal_transition 브로드캐스트 실패: %s", e)
 
     # scan_update 브로드캐스트
     if connected_clients:
@@ -588,13 +583,13 @@ async def update_prediction_progress():
                     "current_price": current_price,
                 })
 
-                # 조기 종료 체크
+                # 조기 종료 체크 (None/0 값 안전 처리)
                 if is_long:
-                    hit_sl = current_price <= sl
-                    hit_tp3 = current_price >= tp3
+                    hit_sl = bool(sl and sl > 0 and current_price <= sl)
+                    hit_tp3 = bool(tp3 and tp3 > 0 and current_price >= tp3)
                 else:
-                    hit_sl = current_price >= sl
-                    hit_tp3 = current_price <= tp3
+                    hit_sl = bool(sl and sl > 0 and current_price >= sl)
+                    hit_tp3 = bool(tp3 and tp3 > 0 and current_price <= tp3)
 
                 if hit_sl or hit_tp3:
                     try:
@@ -706,31 +701,31 @@ async def _verify_single_prediction(prediction: dict) -> dict:
 
     # TP를 먼저 체크 (TP3 → TP2 → TP1 → SL 순서)
     # 같은 캔들에서 TP와 SL 동시 도달 시 TP 우선
+    # None/0 값은 안전하게 건너뛰기
+    high_max = actual_candles["high"].max()
+    low_min = actual_candles["low"].min()
+
     if is_long:
-        high_max = actual_candles["high"].max()
-        low_min = actual_candles["low"].min()
-        if high_max >= tp3:
+        if tp3 and tp3 > 0 and high_max >= tp3:
             result = "HIT_TP3"
-        elif high_max >= tp2:
+        elif tp2 and tp2 > 0 and high_max >= tp2:
             result = "HIT_TP2"
-        elif high_max >= tp1:
+        elif tp1 and tp1 > 0 and high_max >= tp1:
             result = "HIT_TP1"
-        elif low_min <= sl:
+        elif sl and sl > 0 and low_min <= sl:
             result = "HIT_SL"
         elif final_price > entry_price:
             result = "PARTIAL"
         else:
             result = "WRONG"
     else:
-        high_max = actual_candles["high"].max()
-        low_min = actual_candles["low"].min()
-        if low_min <= tp3:
+        if tp3 and tp3 > 0 and low_min <= tp3:
             result = "HIT_TP3"
-        elif low_min <= tp2:
+        elif tp2 and tp2 > 0 and low_min <= tp2:
             result = "HIT_TP2"
-        elif low_min <= tp1:
+        elif tp1 and tp1 > 0 and low_min <= tp1:
             result = "HIT_TP1"
-        elif high_max >= sl:
+        elif sl and sl > 0 and high_max >= sl:
             result = "HIT_SL"
         elif final_price < entry_price:
             result = "PARTIAL"
@@ -994,7 +989,10 @@ async def update_paper_positions():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer, paper_trading_repo, risk_manager, trade_executor
+    global scanner, candle_repo, signal_repo, track_repo, prediction_repo, alert_repo, learning_engine, backtest_engine, correlation_analyzer, paper_trading_repo, risk_manager, trade_executor, _market_context, _server_started_at
+
+    # 서버 시작 시간 갱신 (리로더가 아닌 실제 워커 시작 시점)
+    _server_started_at = datetime.now(timezone.utc).isoformat()
 
     # DB 초기화
     await database.connect()
@@ -1030,6 +1028,30 @@ async def lifespan(app: FastAPI):
         logger.info("저장된 적응형 가중치 로드 완료")
     except Exception as e:
         logger.warning("적응형 가중치 로드 실패 (기본값 사용): %s", e)
+
+    # 시장 맥락 초기화 (첫 1h 스캔까지 빈 상태 방지)
+    try:
+        await _refresh_ticker_cache()
+        btc_ticker = _ticker_cache.get("BTC/USDT") or _ticker_cache.get("BTC/USDT:USDT")
+        all_tickers = [{"change_24h": t.get("percentage", 0) or 0} for t in _ticker_cache.values()]
+        ctx = await build_market_context(
+            latest_signals=[],
+            btc_ticker={"change_24h": btc_ticker.get("percentage", 0)} if btc_ticker else None,
+            all_tickers=all_tickers,
+            sentiment_api_key=CRYPTOPANIC_API_KEY,
+        )
+        _market_context = ctx
+        engine.set_market_context(ctx)
+        logger.info("초기 시장 맥락 로드 완료")
+    except Exception as e:
+        logger.warning("초기 시장 맥락 로드 실패: %s", e)
+
+    # 상관관계 초기화
+    try:
+        await correlation_analyzer.update_correlation(list(SCAN_SYMBOLS))
+        logger.info("초기 상관관계 데이터 로드 완료")
+    except Exception as e:
+        logger.warning("초기 상관관계 로드 실패: %s", e)
 
     # 멀티 타임프레임 스케줄링
     # 15m: 30초마다, 1h: 60초마다, 4h: 5분마다
@@ -1106,13 +1128,13 @@ async def health_check():
     try:
         await database.client.schema(SUPABASE_SCHEMA).table("ohlcv").select("symbol").limit(1).execute()
         checks["database"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("헬스체크 DB 연결 실패: %s", e)
     try:
         await async_client.ensure_markets()
         checks["exchange"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("헬스체크 거래소 연결 실패: %s", e)
 
     # 읽지 않은 알림 수 (DB)
     if alert_repo:
@@ -1142,6 +1164,8 @@ async def _get_futures_cached(symbol: str) -> list:
         return cached["data"]
 
     data = await get_futures_signals(async_client, symbol)
+    if data is None:
+        data = []
     _futures_cache[symbol] = {"data": data, "ts": now}
     return data
 
@@ -1218,8 +1242,8 @@ async def analyze_symbol(
                         "confirmed_at": active_track["confirmed_at"],
                         "peak_confidence": active_track["peak_confidence"],
                     }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("분석 트랙 조회 실패 [%s]: %s", symbol, e)
 
         result = _enrich_signal_result(result, symbol, signal.signal, signal.confidence)
 
@@ -1401,10 +1425,16 @@ async def get_market_context():
 
 @app.get("/api/learning/weights")
 async def get_learning_weights():
-    weights = await learning_engine.get_adaptive_weights() if learning_engine else {}
+    if not learning_engine:
+        return {
+            "weights": SignalEngine.DEFAULT_WEIGHTS,
+            "is_adaptive": False,
+            "default_weights": SignalEngine.DEFAULT_WEIGHTS,
+        }
+    weights = await learning_engine.get_adaptive_weights()
     return {
-        "weights": weights,
-        "is_adaptive": learning_engine._cached_weights is not None if learning_engine else False,
+        "weights": weights or SignalEngine.DEFAULT_WEIGHTS,
+        "is_adaptive": learning_engine._cached_weights is not None,
         "default_weights": SignalEngine.DEFAULT_WEIGHTS,
     }
 
@@ -1556,8 +1586,8 @@ async def create_prediction(
         if higher_tf != timeframe:
             try:
                 higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("예측 상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
         signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df)
 
@@ -1568,7 +1598,7 @@ async def create_prediction(
         try:
             body = await request.json()
         except Exception:
-            pass
+            pass  # body가 없는 경우 기본값 사용
         horizon = body.get("horizon_candles", DEFAULT_HORIZON_CANDLES.get(timeframe, 24))
 
         regime_result = detect_regime(df)
@@ -1620,10 +1650,10 @@ async def create_prediction(
             signal_direction=signal.signal,
             confidence=signal.confidence,
             entry_price=signal.current_price,
-            stop_loss=tp.get("stop_loss", 0),
-            take_profit_1=tp.get("take_profit_1", 0),
-            take_profit_2=tp.get("take_profit_2", 0),
-            take_profit_3=tp.get("take_profit_3", 0),
+            stop_loss=tp.get("stop_loss") or None,
+            take_profit_1=tp.get("take_profit_1") or None,
+            take_profit_2=tp.get("take_profit_2") or None,
+            take_profit_3=tp.get("take_profit_3") or None,
             atr=signal.price_levels.get("atr", 0),
             atr_percent=signal.price_levels.get("atr_percent", 0),
             predicted_path=prediction_data["predicted_path"],
@@ -1822,10 +1852,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     if higher_tf != timeframe:
                         try:
                             higher_tf_df = await candle_repo.get_candles(symbol, higher_tf, limit=ANALYSIS_CANDLE_LIMIT)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("WS 상위TF(%s) 조회 실패 [%s]: %s", higher_tf, symbol, e)
 
                     futures_data = await get_futures_signals(async_client, symbol)
+                    if futures_data is None:
+                        futures_data = []
                     signal = engine.analyze(df, symbol, timeframe, higher_tf_df=higher_tf_df, futures_data=futures_data)
                     signal_data = signal.to_dict()
 
@@ -1840,8 +1872,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "confirmed_at": active_track["confirmed_at"],
                                     "peak_confidence": active_track["peak_confidence"],
                                 }
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("WS 트랙 조회 실패 [%s]: %s", symbol, e)
 
                     await websocket.send_text(_safe_dumps({
                         "type": "subscription_update",

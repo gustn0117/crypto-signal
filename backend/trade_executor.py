@@ -91,13 +91,16 @@ class TradeExecutor:
 
         # 4) 리스크 체크
         if self.risk_manager:
-            warnings = self.risk_manager.check_new_position(
-                symbol, position_usdt, open_positions, equity
-            )
-            critical = [w for w in warnings if w.level == "critical"]
-            if critical:
-                logger.warning("[자동매매] 리스크 경고로 주문 거부: %s", critical[0].message)
-                return None
+            try:
+                warnings = self.risk_manager.check_new_position(
+                    symbol, position_usdt, open_positions, equity
+                )
+                critical = [w for w in warnings if w.level == "critical"]
+                if critical:
+                    logger.warning("[자동매매] 리스크 경고로 주문 거부: %s", critical[0].message)
+                    return None
+            except Exception as e:
+                logger.warning("[자동매매] 리스크 체크 실패, 계속 진행: %s", e)
 
         # 5) 주문 실행 (현재는 모의투자)
         try:

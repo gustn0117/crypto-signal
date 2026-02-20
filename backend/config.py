@@ -46,10 +46,7 @@ SCALP_SYMBOLS_LIMIT = int(os.getenv("SCALP_SYMBOLS_LIMIT", "10"))  # 1m/5m은 �
 
 # Supabase (PostgreSQL)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://api.hsweb.pics")
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE2NDE3NjkyMDAsImV4cCI6MTc5OTUzNTYwMH0.xTNteRFphY3F9W2PPWOwCQ9PDXD05ySRqkJu5d4Cej0",
-)
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 SUPABASE_SCHEMA = "coin"
 PG_META_URL = os.getenv("PG_META_URL", "https://api.hsweb.pics/pg/query")
 
@@ -109,11 +106,6 @@ ALERT_COOLDOWN_MAP = {
 DEFAULT_HORIZON_CANDLES = {
     "1m": 60, "5m": 36, "15m": 24, "30m": 24, "1h": 24, "4h": 12, "1d": 7,
 }
-
-# ─── Telegram/Discord 알림 ──────────────────────────────
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # ─── 감성 분석 ──────────────────────────────────────────
 CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")

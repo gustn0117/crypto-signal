@@ -6,6 +6,26 @@ import { Signal, Alert, Prediction, PredictionProgress, PaperTrade, PaperPositio
 const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 const MAX_RECONNECT_DELAY = 30000;
 
+export interface SignalTransition {
+  symbol: string;
+  timeframe: string;
+  from_state: string;
+  to_state: string;
+  direction: string;
+  confidence: number;
+  current_price: number;
+}
+
+export interface AutoTradeResult {
+  success: boolean;
+  symbol: string;
+  side: string;
+  amount: number;
+  price: number;
+  order_id: string;
+  error?: string;
+}
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -20,6 +40,8 @@ export function useWebSocket() {
   const [paperTradeOpened, setPaperTradeOpened] = useState<PaperTrade | null>(null);
   const [paperTradeClosed, setPaperTradeClosed] = useState<PaperTrade | null>(null);
   const [paperPositionUpdates, setPaperPositionUpdates] = useState<PaperPositionUpdate[]>([]);
+  const [signalTransition, setSignalTransition] = useState<SignalTransition | null>(null);
+  const [autoTradeResult, setAutoTradeResult] = useState<AutoTradeResult | null>(null);
   const reconnectTimer = useRef<NodeJS.Timeout>();
   const reconnectAttempts = useRef(0);
 
@@ -62,6 +84,10 @@ export function useWebSocket() {
           setPaperTradeClosed(message.data);
         } else if (message.type === "paper_position_update") {
           setPaperPositionUpdates(Array.isArray(message.data) ? message.data : []);
+        } else if (message.type === "signal_transition") {
+          setSignalTransition(message.data);
+        } else if (message.type === "auto_trade_executed") {
+          setAutoTradeResult(message.data);
         }
       } catch (e) {
         console.error("메시지 파싱 오류:", e);
@@ -127,6 +153,8 @@ export function useWebSocket() {
 
   const clearPaperTradeOpened = useCallback(() => setPaperTradeOpened(null), []);
   const clearPaperTradeClosed = useCallback(() => setPaperTradeClosed(null), []);
+  const clearSignalTransition = useCallback(() => setSignalTransition(null), []);
+  const clearAutoTradeResult = useCallback(() => setAutoTradeResult(null), []);
 
   return {
     connected,
@@ -141,6 +169,8 @@ export function useWebSocket() {
     paperTradeOpened,
     paperTradeClosed,
     paperPositionUpdates,
+    signalTransition,
+    autoTradeResult,
     subscribe,
     unsubscribe,
     clearLatestAlert,
@@ -148,6 +178,8 @@ export function useWebSocket() {
     clearPredictionVerified,
     clearPaperTradeOpened,
     clearPaperTradeClosed,
+    clearSignalTransition,
+    clearAutoTradeResult,
     resetUnreadAlerts,
   };
 }

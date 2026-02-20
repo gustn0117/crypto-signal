@@ -610,3 +610,107 @@ export async function fetchPaperTradingStats(): Promise<PaperTradingStats> {
   return fetchWithError(`${API_BASE}/api/paper/stats`);
 }
 
+// ─── 자동매매 설정 ──────────────────────────────────────
+
+export interface AutoTradeConfig {
+  enabled: boolean;
+  max_positions: number;
+  max_position_pct: number;
+}
+
+export async function fetchAutoTradeConfig(): Promise<AutoTradeConfig> {
+  return fetchWithError(`${API_BASE}/api/auto-trade/config`);
+}
+
+export async function updateAutoTradeConfig(
+  config: Partial<AutoTradeConfig>
+): Promise<AutoTradeConfig> {
+  const res = await fetch(`${API_BASE}/api/auto-trade/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ─── 포트폴리오 리스크 ──────────────────────────────────
+
+export interface PortfolioRiskReport {
+  total_exposure_pct: number;
+  position_count: number;
+  var_95: number;
+  max_correlated: number;
+  warnings: string[];
+  positions: { symbol: string; weight_pct: number }[];
+}
+
+export async function fetchPortfolioRisk(): Promise<PortfolioRiskReport> {
+  return fetchWithError(`${API_BASE}/api/portfolio/risk`);
+}
+
+// ─── 시장 맥락 ──────────────────────────────────────────
+
+export interface MarketContext {
+  btc_signal?: string;
+  market_sentiment?: string;
+  breadth_ratio?: number;
+  fear_greed?: number;
+  fear_greed_label?: string;
+  sentiment_score?: number;
+  onchain_data?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export async function fetchMarketContext(): Promise<MarketContext> {
+  return fetchWithError(`${API_BASE}/api/market-context`);
+}
+
+// ─── 백테스트 통계 ──────────────────────────────────────
+
+export interface BacktestStats {
+  total_predictions: number;
+  verified_count: number;
+  win_rate: number;
+  avg_accuracy: number;
+  advanced_stats?: {
+    sharpe_ratio: number;
+    sortino_ratio: number;
+    profit_factor: number;
+    max_drawdown: number;
+    avg_hold_hours: number;
+    consecutive_wins: number;
+    consecutive_losses: number;
+    equity_curve: { time: string; equity: number }[];
+  };
+  [key: string]: unknown;
+}
+
+export async function fetchBacktestStats(): Promise<BacktestStats> {
+  return fetchWithError(`${API_BASE}/api/backtest/stats`);
+}
+
+// ─── 학습 가중치 ────────────────────────────────────────
+
+export interface LearningWeights {
+  weights: Record<string, number>;
+  is_adaptive: boolean;
+  default_weights: Record<string, number>;
+}
+
+export async function fetchLearningWeights(): Promise<LearningWeights> {
+  return fetchWithError(`${API_BASE}/api/learning/weights`);
+}
+
+export async function triggerLearning(): Promise<{ message: string; weights: Record<string, number> }> {
+  const res = await fetch(`${API_BASE}/api/learning/run`, { method: "POST" });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+

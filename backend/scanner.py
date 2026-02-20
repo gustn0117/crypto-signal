@@ -233,9 +233,19 @@ class MarketScanner:
                         if htf_df is not None and len(htf_df) >= 50:
                             higher_tf_dfs[htf] = htf_df
 
+                    # 오더북 데이터 (스캘핑 TF에서만 가져와 부하 최소화)
+                    orderbook_data = None
+                    if is_scalp:
+                        try:
+                            await self.client.ensure_markets()
+                            orderbook_data = await self.client.exchange.fetch_order_book(symbol, limit=20)
+                        except Exception:
+                            pass
+
                     signal = self.engine.analyze(
                         df, symbol, timeframe,
                         higher_tf_dfs=higher_tf_dfs if higher_tf_dfs else None,
+                        orderbook_data=orderbook_data,
                     )
                     result = signal.to_dict()
 
