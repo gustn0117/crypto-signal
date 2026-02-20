@@ -1,12 +1,15 @@
 """
-몬테카를로 가격 예측 엔진 (v3)
+몬테카를로 가격 예측 엔진 (v4)
 2000회 시뮬레이션 → 중앙값 = 예측선, 10/90 퍼센타일 = 신뢰 구간
 
-v3 개선:
-- 시뮬레이션 횟수 500→2000 (서버 자원 최대 활용)
-- 하이브리드 분포: 실제 과거 수익률 분포 + Student's t 폴백
-- BTC 상관관계 드리프트 보정 (알트코인)
-- 시간대별 변동성 프로필 (아시아/유럽/미국 세션)
+v4 개선 (시그널 엔진 분석 결과 완전 통합):
+- 카테고리 스코어(지표/캔들/차트/거래량/선물) → 드리프트 방향성 강화
+- 오더북 불균형 → 단기 방향 압력
+- 패턴 매칭 → 과거 유사 패턴 기반 드리프트 보정
+- ML 예측 확률 → 앙상블 드리프트
+- 이상치 탐지 → 변동성 확대
+- MTF 합류 → 드리프트 확신도 강화
+- 합류(Confluence) 보너스 → 방향 확신도 강화
 """
 import logging
 from datetime import datetime, timezone
@@ -61,26 +64,15 @@ def generate_prediction(
     historical_returns: np.ndarray | None = None,
 ) -> dict:
     """
-    몬테카를로 시뮬레이션 기반 미래 가격 경로 생성 (v2).
+    몬테카를로 시뮬레이션 기반 미래 가격 경로 생성 (v4).
 
-    Args:
-        signal_direction: STRONG_LONG/LONG/NEUTRAL/SHORT/STRONG_SHORT
-        confidence: 시그널 신뢰도 (0~1)
-        entry_price: 현재 진입 가격
-        trade_params: SL/TP 정보 dict
-        price_levels: ATR 등 가격 레벨 정보
-        timeframe: 타임프레임 문자열
-        horizon_candles: 예측 봉 수
-        indicator_snapshot: RSI, MACD slope, BB position, volume_ratio 등
-        regime: TRENDING_UP/TRENDING_DOWN/RANGING/VOLATILE
-        calibration: 과거 정확도 피드백
-        sr_levels: 지지/저항 가격 레벨 리스트
-        btc_signal_direction: BTC의 시그널 방향 (알트코인 상관관계 보정용)
-        is_altcoin: 알트코인 여부
-        historical_returns: 과거 캔들의 수익률 배열 (리샘플링용, 100개 이상 필요)
-
-    Returns:
-        dict with predicted_path, upper_bound_path, lower_bound_path, horizon_candles
+    indicator_snapshot에 포함된 확장 데이터:
+    - category_scores: {indicator, candle_pattern, chart_pattern, volume, futures, total}
+    - orderbook: {imbalance, signal, strength, bid_wall, ask_wall}
+    - anomaly: {score, is_anomaly, vol_ratio, price_change_pct}
+    - pattern_match: {total_matches, up_pct, avg_outcome_pct}
+    - ml_prediction: {up, down, flat}
+    - confluence_bonus, mtf_agreement, mtf_modifier
     """
     now = datetime.now(timezone.utc)
     now_ts = int(now.timestamp())
@@ -91,13 +83,31 @@ def generate_prediction(
     is_long = signal_direction in ("STRONG_LONG", "LONG")
     is_short = signal_direction in ("STRONG_SHORT", "SHORT")
 
-    # ── 1. 드리프트 계산 ──
-    drift = _calculate_drift(is_long, is_short, confidence, signal_direction, atr, snap)
+    # ── 1. 기본 드리프트 (기술 지표 기반) ──
+    drift = _calculate_base_drift(is_long, is_short, confidence, signal_direction, atr, snap)
 
-    # ── 2. 레짐별 변동성 & 드리프트 보정 ──
+    # ── 2. 카테고리 스코어 기반 드리프트 강화 ──
+    drift = _apply_category_scores(drift, snap, atr, is_long, is_short)
+
+    # ── 3. 오더북 불균형 드리프트 ──
+    drift = _apply_orderbook_drift(drift, snap, atr, is_long, is_short)
+
+    # ── 4. 패턴 매칭 기반 드리프트 ──
+    drift = _apply_pattern_drift(drift, snap, atr, is_long, is_short)
+
+    # ── 5. ML 예측 앙상블 드리프트 ──
+    drift = _apply_ml_drift(drift, snap, atr, is_long, is_short)
+
+    # ── 6. 합류 + MTF 확인 드리프트 ──
+    drift = _apply_confluence_mtf(drift, snap)
+
+    # ── 7. 레짐별 변동성 & 드리프트 보정 ──
     step_vol, drift = _apply_regime(regime, atr, drift)
 
-    # ── 3. 캘리브레이션 ──
+    # ── 8. 이상치 감지 → 변동성 확대 ──
+    step_vol = _apply_anomaly_volatility(step_vol, snap)
+
+    # ── 9. 캘리브레이션 ──
     cal_factor = 1.0
     if calibration and calibration.get("count", 0) >= 5:
         avg_acc = min(max(calibration.get("avg_accuracy", 0.5), 0.0), 1.0)
@@ -105,26 +115,25 @@ def generate_prediction(
         drift *= cal_factor
         step_vol *= max(0.5, 2.0 - cal_factor)
 
-    # ── 4. BTC 상관관계 보정 (알트코인만) ──
+    # ── 10. BTC 상관관계 보정 (알트코인만) ──
     if is_altcoin and btc_signal_direction:
         drift = _apply_btc_correlation(drift, btc_signal_direction, is_long, is_short, atr)
 
-    # ── 5. SL/TP 바운더리 ──
+    # ── 11. SL/TP 바운더리 ──
     sl_price = None
     tp3_price = None
     if trade_params:
         sl_price = trade_params.get("stop_loss")
         tp3_price = trade_params.get("take_profit_3")
 
-    # ── 6. 지지/저항 레벨 ──
+    # ── 12. 지지/저항 레벨 ──
     sr = sorted(sr_levels) if sr_levels else []
 
-    # ── 7. 시뮬레이션 실행 (하이브리드: 실제 수익률 분포 or Student's t) ──
+    # ── 13. 시뮬레이션 실행 ──
     rng = np.random.default_rng()
     all_paths = np.zeros((NUM_SIMULATIONS, horizon_candles + 1))
     all_paths[:, 0] = entry_price
 
-    # 실제 과거 수익률이 충분하면 리샘플링 사용
     use_historical = (historical_returns is not None and len(historical_returns) >= 100)
     if use_historical:
         hist_std = float(np.std(historical_returns))
@@ -138,11 +147,9 @@ def generate_prediction(
         price = entry_price
         for step in range(1, horizon_candles + 1):
             if use_historical:
-                # 실제 과거 수익률에서 리샘플링 → 가격 단위로 변환
                 sampled_return = rng.choice(historical_returns)
                 noise = sampled_return * entry_price * (step_vol / (hist_std * entry_price + 1e-12))
             else:
-                # Fat-tail 노이즈 (Student's t)
                 noise = scipy_stats.t.rvs(df=T_DISTRIBUTION_DF, random_state=rng) * step_vol
 
             # 시간대별 변동성 조정
@@ -171,7 +178,7 @@ def generate_prediction(
             price = max(price, entry_price * 0.5)
             all_paths[sim, step] = price
 
-    # ── 8. 결과 추출 ──
+    # ── 14. 결과 추출 ──
     median_path = np.median(all_paths, axis=0)
     upper_path = np.percentile(all_paths, 90, axis=0)
     lower_path = np.percentile(all_paths, 10, axis=0)
@@ -199,7 +206,11 @@ def generate_prediction(
     }
 
 
-def _calculate_drift(
+# ────────────────────────────────────────────────────────
+# 드리프트 계산 함수들
+# ────────────────────────────────────────────────────────
+
+def _calculate_base_drift(
     is_long: bool,
     is_short: bool,
     confidence: float,
@@ -207,7 +218,7 @@ def _calculate_drift(
     atr: float,
     snap: dict,
 ) -> float:
-    """지표 기반 스텝 드리프트 계산 (ATR 단위)."""
+    """기본 지표(RSI, MACD, BB, 거래량) 기반 드리프트."""
     if not is_long and not is_short:
         return 0.0
 
@@ -251,6 +262,187 @@ def _calculate_drift(
     return drift
 
 
+def _apply_category_scores(
+    drift: float, snap: dict, atr: float, is_long: bool, is_short: bool
+) -> float:
+    """카테고리 스코어(지표/캔들/차트/거래량/선물) 기반 드리프트 강화.
+
+    total_score가 강하면(>0.3 or <-0.3) 드리프트를 최대 ±20% 증폭.
+    개별 카테고리 합류 시 추가 부스트.
+    """
+    cs = snap.get("category_scores")
+    if not cs:
+        return drift
+
+    total = cs.get("total", 0.0)
+
+    # 전체 스코어 방향이 시그널과 일치하면 드리프트 강화
+    if is_long and total > 0.15:
+        drift *= 1.0 + min(total, 0.5) * 0.4  # 최대 1.2배
+    elif is_short and total < -0.15:
+        drift *= 1.0 + min(abs(total), 0.5) * 0.4
+    elif is_long and total < -0.15:
+        drift *= max(0.7, 1.0 - abs(total) * 0.3)  # 반대 방향이면 감쇠
+    elif is_short and total > 0.15:
+        drift *= max(0.7, 1.0 - total * 0.3)
+
+    # 캔들 + 차트 패턴 합류 부스트
+    candle = cs.get("candle_pattern", 0.0)
+    chart = cs.get("chart_pattern", 0.0)
+    if is_long and candle > 0.3 and chart > 0.3:
+        drift += 0.03 * atr  # 캔들+차트 모두 강세 → 추가 부스트
+    elif is_short and candle < -0.3 and chart < -0.3:
+        drift -= 0.03 * atr
+
+    # 선물 데이터 합류 (OI, 펀딩레이트 방향 일치)
+    futures = cs.get("futures", 0.0)
+    if is_long and futures > 0.3:
+        drift += 0.02 * atr
+    elif is_short and futures < -0.3:
+        drift -= 0.02 * atr
+
+    return drift
+
+
+def _apply_orderbook_drift(
+    drift: float, snap: dict, atr: float, is_long: bool, is_short: bool
+) -> float:
+    """오더북 불균형 기반 단기 방향 압력.
+
+    매수/매도 불균형이 크면 해당 방향으로 드리프트 추가.
+    벽(wall)이 있으면 해당 방향 지지/저항으로 작용.
+    """
+    ob = snap.get("orderbook")
+    if not ob:
+        return drift
+
+    imbalance = ob.get("imbalance", 0.0)  # -1 ~ +1
+    strength = ob.get("strength", 0.0)
+
+    # 불균형 방향이 시그널과 일치하면 드리프트 부스트
+    if is_long and imbalance > 0.2:
+        drift += strength * 0.06 * atr  # 매수 우세 → LONG 부스트
+    elif is_short and imbalance < -0.2:
+        drift -= strength * 0.06 * atr  # 매도 우세 → SHORT 부스트
+    elif is_long and imbalance < -0.3:
+        drift *= 0.85  # 매도 우세인데 LONG → 감쇠
+    elif is_short and imbalance > 0.3:
+        drift *= 0.85  # 매수 우세인데 SHORT → 감쇠
+
+    return drift
+
+
+def _apply_pattern_drift(
+    drift: float, snap: dict, atr: float, is_long: bool, is_short: bool
+) -> float:
+    """과거 유사 패턴 기반 드리프트 보정.
+
+    유사 패턴의 상승/하락 비율로 드리프트 방향 확신도 조정.
+    avg_outcome_pct로 기대 수익률 반영.
+    """
+    pm = snap.get("pattern_match")
+    if not pm or pm.get("total_matches", 0) < 10:
+        return drift
+
+    up_pct = pm.get("up_pct", 0.5)
+    avg_outcome = pm.get("avg_outcome_pct", 0.0)
+
+    # 과거 패턴이 시그널 방향과 강하게 일치
+    if is_long and up_pct > 0.65:
+        pattern_boost = (up_pct - 0.5) * 0.15 * atr  # 최대 0.075 * atr
+        drift += pattern_boost
+        if avg_outcome > 0.5:  # 평균 수익률 0.5% 이상
+            drift += min(avg_outcome * 0.01, 0.03) * atr
+    elif is_short and up_pct < 0.35:
+        pattern_boost = (0.5 - up_pct) * 0.15 * atr
+        drift -= pattern_boost
+        if avg_outcome < -0.5:
+            drift -= min(abs(avg_outcome) * 0.01, 0.03) * atr
+
+    # 과거 패턴이 시그널과 반대면 감쇠
+    elif is_long and up_pct < 0.35:
+        drift *= 0.8
+    elif is_short and up_pct > 0.65:
+        drift *= 0.8
+
+    return drift
+
+
+def _apply_ml_drift(
+    drift: float, snap: dict, atr: float, is_long: bool, is_short: bool
+) -> float:
+    """ML(LSTM) 예측 확률 기반 앙상블 드리프트.
+
+    ML이 높은 확률로 방향 예측 시 드리프트 강화/약화.
+    ML 가중치: 전체 드리프트의 최대 ±15%.
+    """
+    ml = snap.get("ml_prediction")
+    if not ml:
+        return drift
+
+    up_prob = ml.get("up", 0.33)
+    down_prob = ml.get("down", 0.33)
+
+    # ML이 강한 방향성을 보이면 (>0.5) 드리프트 조정
+    if is_long and up_prob > 0.5:
+        ml_boost = (up_prob - 0.33) * 0.22  # 최대 ~0.15
+        drift *= (1.0 + ml_boost)
+    elif is_short and down_prob > 0.5:
+        ml_boost = (down_prob - 0.33) * 0.22
+        drift *= (1.0 + ml_boost)
+    elif is_long and down_prob > 0.5:
+        ml_dampen = (down_prob - 0.33) * 0.15  # 최대 ~0.10
+        drift *= max(0.75, 1.0 - ml_dampen)
+    elif is_short and up_prob > 0.5:
+        ml_dampen = (up_prob - 0.33) * 0.15
+        drift *= max(0.75, 1.0 - ml_dampen)
+
+    return drift
+
+
+def _apply_confluence_mtf(drift: float, snap: dict) -> float:
+    """합류(Confluence) 보너스 + 멀티타임프레임 확인 반영."""
+    # 합류 보너스: 여러 지표가 같은 방향 → 드리프트 확신 강화
+    confluence = snap.get("confluence_bonus", 0.0)
+    if confluence > 0:
+        drift *= (1.0 + confluence * 0.5)  # 최대 ~1.15배
+    elif confluence < 0:
+        drift *= max(0.85, 1.0 + confluence * 0.5)
+
+    # MTF 합류: 상위 타임프레임도 같은 방향이면 부스트
+    mtf_agrees = snap.get("mtf_agreement")
+    mtf_mod = snap.get("mtf_modifier", 0.0)
+    if mtf_agrees is True and mtf_mod > 0:
+        drift *= (1.0 + mtf_mod * 0.3)  # 상위TF 동의 → 최대 ~1.06배
+    elif mtf_agrees is False and mtf_mod < 0:
+        drift *= max(0.85, 1.0 + mtf_mod * 0.3)  # 상위TF 반대 → 감쇠
+
+    return drift
+
+
+def _apply_anomaly_volatility(step_vol: float, snap: dict) -> float:
+    """이상치 감지 시 변동성 확대.
+
+    이상치 = 비정상적 거래량/가격 변동 → 예측 불확실성 증가 → 신뢰 구간 확대.
+    """
+    anomaly = snap.get("anomaly")
+    if not anomaly:
+        return step_vol
+
+    if anomaly.get("is_anomaly"):
+        score = abs(anomaly.get("score", 0.0))
+        vol_expansion = 1.0 + min(score, 1.0) * 0.4  # 최대 1.4배
+        step_vol *= vol_expansion
+        logger.debug("이상치 감지: 변동성 %.1f%% 확대", (vol_expansion - 1) * 100)
+
+    # 거래량 급등 (정상이라도) → 약간의 변동성 확대
+    vol_ratio = anomaly.get("vol_ratio", 1.0)
+    if vol_ratio > 2.0:
+        step_vol *= 1.0 + min(vol_ratio - 2.0, 2.0) * 0.1  # 최대 1.2배
+
+    return step_vol
+
+
 def _apply_regime(regime: str | None, atr: float, drift: float) -> tuple[float, float]:
     """레짐별 스텝 변동성과 드리프트 조정."""
     if regime == "TRENDING_UP" or regime == "TRENDING_DOWN":
@@ -279,11 +471,11 @@ def _apply_btc_correlation(
     btc_is_short = btc_direction in ("STRONG_SHORT", "SHORT")
 
     if btc_is_long and is_long:
-        drift *= 1.10  # BTC와 같은 방향 → 확신 강화
+        drift *= 1.10
     elif btc_is_short and is_short:
         drift *= 1.10
     elif btc_is_long and is_short:
-        drift *= 0.90  # BTC와 반대 → 확신 약화
+        drift *= 0.90
     elif btc_is_short and is_long:
         drift *= 0.90
 

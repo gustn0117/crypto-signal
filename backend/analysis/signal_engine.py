@@ -259,8 +259,9 @@ class SignalEngine:
             confidence = self._apply_market_context(signal, confidence)
 
         # 9.5) Phase 2/3 모듈 보정
+        advanced_snapshot = {}
         try:
-            confidence = self._apply_advanced_modules(
+            confidence, advanced_snapshot = self._apply_advanced_modules_with_snapshot(
                 df, signal, confidence, timeframe, orderbook_data, current_price
             )
         except Exception as e:
@@ -292,8 +293,23 @@ class SignalEngine:
         if signal != "NEUTRAL":
             trade_params_result = calculate_trade_params(df, signal, levels, timeframe=timeframe, confidence=confidence)
 
-        # 13) 지표 스냅샷 생성
+        # 13) 지표 스냅샷 생성 (카테고리 스코어 + 고급 모듈 결과 포함)
         indicator_snapshot = self._build_indicator_snapshot(df, timeframe)
+        indicator_snapshot["category_scores"] = {
+            "indicator": round(indicator_score, 4),
+            "candle_pattern": round(candle_score, 4),
+            "chart_pattern": round(chart_score, 4),
+            "volume": round(volume_score, 4),
+            "futures": round(futures_score, 4),
+            "total": round(total_score, 4),
+        }
+        indicator_snapshot["regime"] = regime.regime
+        indicator_snapshot["confluence_bonus"] = round(confluence_bonus, 4)
+        if mtf_result:
+            indicator_snapshot["mtf_agreement"] = mtf_result.alignment == "aligned"
+            indicator_snapshot["mtf_modifier"] = round(mtf_result.confidence_modifier, 4)
+        if advanced_snapshot:
+            indicator_snapshot.update(advanced_snapshot)
 
         # 14) 요약 생성
         summary = self._generate_summary(
@@ -393,7 +409,7 @@ class SignalEngine:
 
         return max(0.0, min(1.0, confidence + modifier))
 
-    def _apply_advanced_modules(
+    def _apply_advanced_modules_with_snapshot(
         self,
         df: pd.DataFrame,
         signal: str,
@@ -401,20 +417,27 @@ class SignalEngine:
         timeframe: str,
         orderbook_data: Optional[dict],
         current_price: float,
-    ) -> float:
-        """Phase 2/3 분석 모듈로 신뢰도 보정."""
+    ) -> tuple:
+        """Phase 2/3 분석 모듈로 신뢰도 보정 + 예측 엔진용 스냅샷 반환."""
         modifier = 0.0
+        snapshot: dict = {}
 
         # 1) 오더북 불균형 분석
         if orderbook_data:
             ob_result = analyze_orderbook(orderbook_data, current_price)
             if ob_result and ob_result.signal != "neutral":
-                # 시그널 방향과 오더북 방향이 일치하면 부스트
                 is_long = "LONG" in signal
                 if (is_long and ob_result.signal == "long") or (not is_long and ob_result.signal == "short"):
-                    modifier += ob_result.strength * 0.05  # 최대 +0.04
+                    modifier += ob_result.strength * 0.05
                 elif (is_long and ob_result.signal == "short") or (not is_long and ob_result.signal == "long"):
-                    modifier -= ob_result.strength * 0.03  # 최대 -0.024
+                    modifier -= ob_result.strength * 0.03
+                snapshot["orderbook"] = {
+                    "imbalance": round(ob_result.imbalance_ratio, 4),
+                    "signal": ob_result.signal,
+                    "strength": round(ob_result.strength, 4),
+                    "bid_wall": ob_result.bid_wall,
+                    "ask_wall": ob_result.ask_wall,
+                }
 
         # 2) 이상치 탐지
         if len(df) >= 21:
@@ -435,17 +458,28 @@ class SignalEngine:
             if anom_mod != 0.0:
                 modifier += anom_mod
                 logger.debug("이상치 보정: score=%.3f, mod=%.3f", anomaly.anomaly_score, anom_mod)
+            snapshot["anomaly"] = {
+                "score": round(anomaly.anomaly_score, 4),
+                "is_anomaly": anomaly.is_anomaly,
+                "vol_ratio": round(vol_ratio, 3),
+                "price_change_pct": round(price_change, 4),
+            }
 
         # 3) 패턴 매칭 (데이터 충분할 때만)
         if signal != "NEUTRAL" and len(df) >= 60:
             close_list = df["close"].tolist()
-            # 패턴 DB 구축 (매 호출마다 하지 않고 충분한 데이터일 때만)
             if len(self._pattern_matcher._pattern_db) < 100 and len(close_list) >= 200:
                 self._pattern_matcher.build_from_candles(close_list)
             pattern_result = self._pattern_matcher.find_similar(close_list)
             pat_mod = self._pattern_matcher.get_confidence_modifier(pattern_result, signal)
             if pat_mod != 0.0:
                 modifier += pat_mod
+            if pattern_result:
+                snapshot["pattern_match"] = {
+                    "total_matches": pattern_result.total_matches,
+                    "up_pct": round(pattern_result.up_pct, 4),
+                    "avg_outcome_pct": round(pattern_result.avg_outcome_pct, 4),
+                }
 
         # 4) ML 예측 (LSTM)
         if signal != "NEUTRAL" and len(df) >= SEQUENCE_LENGTH_FOR_ML:
@@ -487,10 +521,15 @@ class SignalEngine:
                 if ml_mod != 0.0:
                     modifier += ml_mod
                     logger.debug("ML 보정: up=%.2f down=%.2f mod=%.3f", ml_pred["up"], ml_pred["down"], ml_mod)
+                snapshot["ml_prediction"] = {
+                    "up": round(ml_pred["up"], 4),
+                    "down": round(ml_pred["down"], 4),
+                    "flat": round(ml_pred["flat"], 4),
+                }
             except Exception as e:
                 logger.debug("ML 예측 실패: %s", e)
 
-        return max(0.0, min(1.0, confidence + modifier))
+        return max(0.0, min(1.0, confidence + modifier)), snapshot
 
     def _build_indicator_snapshot(self, df: pd.DataFrame, timeframe: str = "1h") -> dict:
         """예측 엔진에 전달할 지표 스냅샷 생성."""
