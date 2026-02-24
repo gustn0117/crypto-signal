@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 
@@ -2085,6 +2085,62 @@ async def get_paper_trading_stats():
         "total_unrealized_pnl": round(total_unrealized, 2),
         "equity": round(account["balance"] + total_unrealized, 2),
     }
+
+
+# ---------------------------------------------------------------------------
+# 프론트엔드 리버스 프록시 (catch-all) — 반드시 모든 API 라우트 아래에 위치
+# Cloudflare → 백엔드(8001)로만 라우팅되는 환경에서 프론트엔드를 서빙하기 위함
+# ---------------------------------------------------------------------------
+_FRONTEND_ORIGIN = "http://coin-frontend:3000"
+_proxy_client = None
+
+
+async def _get_proxy_client():
+    global _proxy_client
+    if _proxy_client is None:
+        import httpx
+        _proxy_client = httpx.AsyncClient(base_url=_FRONTEND_ORIGIN, timeout=30, follow_redirects=True)
+    return _proxy_client
+
+
+@app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"])
+async def frontend_proxy(request: Request, path: str):
+    """API가 아닌 모든 요청을 프론트엔드 컨테이너로 프록시"""
+    client = await _get_proxy_client()
+    url = f"/{path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+
+    # 프론트엔드로 전달할 헤더 (hop-by-hop 제외)
+    fwd_headers = {}
+    for k, v in request.headers.items():
+        if k.lower() not in ("host", "connection", "transfer-encoding"):
+            fwd_headers[k] = v
+
+    try:
+        resp = await client.request(
+            method=request.method,
+            url=url,
+            headers=fwd_headers,
+            content=await request.body() if request.method in ("POST", "PUT", "PATCH") else None,
+        )
+        # hop-by-hop 헤더 제거
+        resp_headers = {k: v for k, v in resp.headers.items()
+                        if k.lower() not in ("transfer-encoding", "connection", "content-encoding")}
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=resp_headers,
+            media_type=resp.headers.get("content-type"),
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Frontend unavailable")
+
+
+# 루트 경로도 프록시
+@app.get("/", include_in_schema=False)
+async def frontend_root(request: Request):
+    return await frontend_proxy(request, "")
 
 
 if __name__ == "__main__":
