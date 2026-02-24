@@ -78,9 +78,10 @@ def check_higher_tf(
 
         macd_bullish = float(hist_vals.iloc[-1]) > 0
 
-        # 2) ADX + DI+/DI-
+        # 2) ADX + DI+/DI- (B4: ADX 등급별 차등 보정)
         adx_df = ta.adx(high, low, close, length=14)
-        strong_trend = False
+        adx_val = 0.0
+        adx_grade = "none"  # "none"(<15), "weak"(15-25), "strong"(25-40), "extreme"(>40)
         di_bullish = None
 
         if adx_df is not None and not adx_df.empty:
@@ -92,8 +93,16 @@ def check_higher_tf(
                 adx_val = float(adx_df[adx_col[0]].dropna().iloc[-1])
                 dmp = float(adx_df[dmp_col[0]].dropna().iloc[-1])
                 dmn = float(adx_df[dmn_col[0]].dropna().iloc[-1])
-                strong_trend = adx_val > 25
                 di_bullish = dmp > dmn
+                # B4: ADX 등급 분류
+                if adx_val >= 40:
+                    adx_grade = "extreme"
+                elif adx_val >= 25:
+                    adx_grade = "strong"
+                elif adx_val >= 15:
+                    adx_grade = "weak"
+                else:
+                    adx_grade = "none"
 
         # 3) EMA(21) 기울기 (보조)
         ema21 = ta.ema(close, length=21)
@@ -133,32 +142,42 @@ def check_higher_tf(
             trend = "neutral"
             trend_desc = "횡보"
 
-        # 정렬 판단 + 차등 보정
+        # 정렬 판단 + B4: ADX 등급별 차등 보정
         is_long_signal = signal_direction in ("long", "LONG", "STRONG_LONG")
         is_short_signal = signal_direction in ("short", "SHORT", "STRONG_SHORT")
 
-        adx_info = f"ADX {'강' if strong_trend else '약'}"
+        # B4: ADX 등급별 보정값 테이블
+        #   none(<15): 추세 없음 → 약한 보정
+        #   weak(15-25): 약한 추세 → 보통 보정
+        #   strong(25-40): 강한 추세 → 강한 보정
+        #   extreme(>40): 극강 추세 → 최대 보정
+        aligned_mod = {"none": 0.05, "weak": 0.10, "strong": 0.20, "extreme": 0.25}
+        opposed_mod = {"none": -0.10, "weak": -0.15, "strong": -0.25, "extreme": -0.30}
+
+        adx_label = {"none": "무추세", "weak": "약", "strong": "강", "extreme": "극강"}
+        adx_info = f"ADX {adx_label.get(adx_grade, '?')}({adx_val:.0f})"
 
         if trend == "bullish" and is_long_signal:
             alignment = "aligned"
-            modifier = 0.20 if strong_trend else 0.10
+            modifier = aligned_mod.get(adx_grade, 0.10)
             desc = f"{higher_tf} {trend_desc}({adx_info}) - 롱과 정렬 (신뢰도 +{modifier:.0%})"
         elif trend == "bearish" and is_short_signal:
             alignment = "aligned"
-            modifier = 0.20 if strong_trend else 0.10
+            modifier = aligned_mod.get(adx_grade, 0.10)
             desc = f"{higher_tf} {trend_desc}({adx_info}) - 숏과 정렬 (신뢰도 +{modifier:.0%})"
         elif trend == "bullish" and is_short_signal:
             alignment = "opposed"
-            modifier = -0.25 if strong_trend else -0.15
+            modifier = opposed_mod.get(adx_grade, -0.15)
             desc = f"{higher_tf} {trend_desc}({adx_info}) - 숏과 반대 (신뢰도 {modifier:+.0%})"
         elif trend == "bearish" and is_long_signal:
             alignment = "opposed"
-            modifier = -0.25 if strong_trend else -0.15
+            modifier = opposed_mod.get(adx_grade, -0.15)
             desc = f"{higher_tf} {trend_desc}({adx_info}) - 롱과 반대 (신뢰도 {modifier:+.0%})"
         else:
             alignment = "neutral"
-            modifier = 0.0
-            desc = f"{higher_tf} {trend_desc} - 추세 불명확"
+            # B4: ADX 무추세(<15)면 마이너스 보정
+            modifier = -0.05 if adx_grade == "none" else 0.0
+            desc = f"{higher_tf} {trend_desc}({adx_info}) - 추세 불명확"
 
         return MTFConfirmation(
             higher_tf=higher_tf,

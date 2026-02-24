@@ -16,6 +16,31 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# B6: 레짐별 동적 R² 임계값 — 추세장에서는 느슨하게, 횡보장에서는 엄격하게
+_REGIME_R2_THRESHOLD: dict[str, float] = {
+    "TRENDING_UP": 0.45,
+    "TRENDING_DOWN": 0.45,
+    "RANGING": 0.60,
+    "VOLATILE": 0.50,
+    "UNKNOWN": 0.50,
+}
+# 현재 레짐 (signal_engine에서 설정)
+_current_regime: str = "UNKNOWN"
+
+
+def set_chart_pattern_regime(regime: str):
+    """B6: 차트 패턴 분석 전에 현재 레짐을 설정."""
+    global _current_regime
+    _current_regime = regime
+
+
+def _get_r2_threshold(base: float = 0.50) -> float:
+    """B6: 현재 레짐에 맞는 R² 임계값 반환."""
+    regime_th = _REGIME_R2_THRESHOLD.get(_current_regime, 0.50)
+    # base 대비 레짐 조정: base가 0.4이면 레짐 비율만큼 조정
+    ratio = regime_th / 0.50  # 0.50 기준 비율
+    return base * ratio
+
 
 @dataclass
 class ChartPatternResult:
@@ -481,8 +506,8 @@ def detect_wedge(df: pd.DataFrame) -> Optional[ChartPatternResult]:
     if range_first <= 0 or range_last >= range_first * 0.85:
         return None
 
-    # R² 품질 요구
-    if high_r2 < 0.5 or low_r2 < 0.5:
+    # R² 품질 요구 (B6: 레짐 적응형)
+    if high_r2 < _get_r2_threshold(0.5) or low_r2 < _get_r2_threshold(0.5):
         return None
 
     trendline_quality = (high_r2 + low_r2) / 2
@@ -534,8 +559,8 @@ def detect_flag(df: pd.DataFrame) -> Optional[ChartPatternResult]:
     flag_slope, flag_r2 = _linear_regression(flag_data)
     flag_range = (flag_data.max() - flag_data.min()) / flag_data.mean() * 100 if flag_data.mean() > 0 else 0
 
-    # 플래그 정돈도 확인
-    if flag_r2 < 0.4:
+    # 플래그 정돈도 확인 (B6: 레짐 적응형)
+    if flag_r2 < _get_r2_threshold(0.4):
         return None
 
     # 폴/플래그 거래량 비교
@@ -586,7 +611,8 @@ def detect_channel(df: pd.DataFrame) -> Optional[ChartPatternResult]:
     high_slope, high_r2 = _linear_regression(highs_arr)
     low_slope, low_r2 = _linear_regression(lows_arr)
 
-    if high_r2 < 0.6 or low_r2 < 0.6:
+    # B6: 레짐 적응형 R² 임계값
+    if high_r2 < _get_r2_threshold(0.6) or low_r2 < _get_r2_threshold(0.6):
         return None
 
     avg_price = (highs_arr.mean() + lows_arr.mean()) / 2
@@ -1270,7 +1296,7 @@ def detect_broadening_formation(df: pd.DataFrame) -> Optional[ChartPatternResult
     if not (h_slope > 0 and l_slope < 0):
         return None
 
-    if h_r2 < 0.3 or l_r2 < 0.3:
+    if h_r2 < _get_r2_threshold(0.3) or l_r2 < _get_r2_threshold(0.3):
         return None
 
     # 범위 확장 확인
@@ -1386,7 +1412,7 @@ def detect_rounding_bottom(df: pd.DataFrame) -> Optional[ChartPatternResult]:
     ss_tot = np.sum((recent - np.mean(recent)) ** 2)
     r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
-    if r2 < 0.5:
+    if r2 < _get_r2_threshold(0.5):
         return None
 
     # 최저점이 중간 1/3에 위치

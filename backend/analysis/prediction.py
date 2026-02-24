@@ -47,6 +47,21 @@ def _get_session_multiplier(hour_utc: int) -> float:
         return SESSION_VOLATILITY["us"]
 
 
+# ── A1: 드리프트 스테이지별 / 전체 캡 ──
+STAGE_DRIFT_CAP = 0.30   # 각 스테이지 최대 변동: ±0.30 ATR
+TOTAL_DRIFT_CAP = 1.50   # 전체 누적 드리프트 최대: ±1.50 ATR
+
+
+def _cap_drift_delta(before: float, after: float, atr: float, cap: float = STAGE_DRIFT_CAP) -> float:
+    """드리프트 스테이지의 변동분을 ±cap*ATR로 제한."""
+    if atr <= 0:
+        return after
+    delta = after - before
+    max_delta = cap * atr
+    clamped = max(-max_delta, min(max_delta, delta))
+    return before + clamped
+
+
 def generate_prediction(
     signal_direction: str,
     confidence: float,
@@ -86,23 +101,39 @@ def generate_prediction(
     # ── 1. 기본 드리프트 (기술 지표 기반) ──
     drift = _calculate_base_drift(is_long, is_short, confidence, signal_direction, atr, snap)
 
-    # ── 2. 카테고리 스코어 기반 드리프트 강화 ──
+    # ── 2. 카테고리 스코어 기반 드리프트 강화 (CAP 적용) ──
+    prev = drift
     drift = _apply_category_scores(drift, snap, atr, is_long, is_short)
+    drift = _cap_drift_delta(prev, drift, atr)
 
-    # ── 3. 오더북 불균형 드리프트 ──
+    # ── 3. 오더북 불균형 드리프트 (CAP 적용) ──
+    prev = drift
     drift = _apply_orderbook_drift(drift, snap, atr, is_long, is_short)
+    drift = _cap_drift_delta(prev, drift, atr)
 
-    # ── 4. 패턴 매칭 기반 드리프트 ──
+    # ── 4. 패턴 매칭 기반 드리프트 (CAP 적용) ──
+    prev = drift
     drift = _apply_pattern_drift(drift, snap, atr, is_long, is_short)
+    drift = _cap_drift_delta(prev, drift, atr)
 
-    # ── 5. ML 예측 앙상블 드리프트 ──
+    # ── 5. ML 예측 앙상블 드리프트 (CAP 적용) ──
+    prev = drift
     drift = _apply_ml_drift(drift, snap, atr, is_long, is_short)
+    drift = _cap_drift_delta(prev, drift, atr)
 
-    # ── 6. 합류 + MTF 확인 드리프트 ──
+    # ── 6. 합류 + MTF 확인 드리프트 (CAP 적용) ──
+    prev = drift
     drift = _apply_confluence_mtf(drift, snap)
+    drift = _cap_drift_delta(prev, drift, atr)
 
-    # ── 7. 레짐별 변동성 & 드리프트 보정 ──
-    step_vol, drift = _apply_regime(regime, atr, drift)
+    # ── 7. 레짐별 변동성 & 드리프트 보정 (A5: soft score 지원) ──
+    regime_scores = snap.get("regime_scores")
+    step_vol, drift = _apply_regime(regime, atr, drift, regime_scores=regime_scores)
+
+    # ── 전체 드리프트 총량 캡 ──
+    if atr > 0:
+        max_total = TOTAL_DRIFT_CAP * atr
+        drift = max(-max_total, min(max_total, drift))
 
     # ── 8. 이상치 감지 → 변동성 확대 ──
     step_vol = _apply_anomaly_volatility(step_vol, snap)
@@ -203,6 +234,111 @@ def generate_prediction(
         "upper_bound_path": upper_bound,
         "lower_bound_path": lower_bound,
         "horizon_candles": horizon_candles,
+    }
+
+
+# ────────────────────────────────────────────────────────
+# C3: 실시간 예측 경로 재계산
+# ────────────────────────────────────────────────────────
+
+def recalculate_remaining_path(
+    predicted_path: list[dict],
+    upper_bound_path: list[dict],
+    lower_bound_path: list[dict],
+    current_price: float,
+    current_time: int,
+    atr: float,
+) -> dict:
+    """
+    C3: 현재가 기준으로 남은 예측 경로를 재계산.
+
+    이미 지난 구간은 실제가로 고정, 미래 구간은
+    현재가→원래 목표가를 향해 보간하여 경로 수정.
+    """
+    if not predicted_path or len(predicted_path) < 2:
+        return {
+            "predicted_path": predicted_path,
+            "upper_bound_path": upper_bound_path,
+            "lower_bound_path": lower_bound_path,
+        }
+
+    # 현재 시간 이후의 첫 인덱스 찾기
+    future_idx = 0
+    for i, pt in enumerate(predicted_path):
+        if pt["time"] >= current_time:
+            future_idx = i
+            break
+    else:
+        # 모든 경로가 과거 → 수정 불필요
+        return {
+            "predicted_path": predicted_path,
+            "upper_bound_path": upper_bound_path,
+            "lower_bound_path": lower_bound_path,
+        }
+
+    if future_idx == 0:
+        future_idx = 1  # 최소 1개는 고정
+
+    remaining = len(predicted_path) - future_idx
+    if remaining < 2:
+        return {
+            "predicted_path": predicted_path,
+            "upper_bound_path": upper_bound_path,
+            "lower_bound_path": lower_bound_path,
+        }
+
+    # 현재가와 원래 경로의 차이 (drift correction)
+    orig_now_price = predicted_path[future_idx]["price"]
+    price_offset = current_price - orig_now_price
+
+    # 차이가 ATR의 10% 미만이면 수정 불필요
+    if atr > 0 and abs(price_offset) < atr * 0.10:
+        return {
+            "predicted_path": predicted_path,
+            "upper_bound_path": upper_bound_path,
+            "lower_bound_path": lower_bound_path,
+        }
+
+    # 미래 경로 재계산: 현재가에서 시작, 점진적으로 원래 목표가로 수렴
+    new_predicted = predicted_path[:future_idx]
+    new_upper = upper_bound_path[:future_idx] if upper_bound_path else []
+    new_lower = lower_bound_path[:future_idx] if lower_bound_path else []
+
+    for j in range(remaining):
+        progress = j / (remaining - 1) if remaining > 1 else 1.0
+        # 보정량이 점진적으로 감소 (현재가 영향 → 원래 목표가)
+        blend = 1.0 - progress  # 1.0 at start, 0.0 at end
+        offset_now = price_offset * blend
+
+        idx = future_idx + j
+
+        # 예측선
+        new_p = predicted_path[idx]["price"] + offset_now
+        new_predicted.append({
+            "time": predicted_path[idx]["time"],
+            "price": round(float(new_p), 8),
+        })
+
+        # 상한선
+        if upper_bound_path and idx < len(upper_bound_path):
+            new_u = upper_bound_path[idx]["price"] + offset_now
+            new_upper.append({
+                "time": upper_bound_path[idx]["time"],
+                "price": round(float(new_u), 8),
+            })
+
+        # 하한선
+        if lower_bound_path and idx < len(lower_bound_path):
+            new_l = lower_bound_path[idx]["price"] + offset_now
+            new_lower.append({
+                "time": lower_bound_path[idx]["time"],
+                "price": round(float(new_l), 8),
+            })
+
+    return {
+        "predicted_path": new_predicted,
+        "upper_bound_path": new_upper,
+        "lower_bound_path": new_lower,
     }
 
 
@@ -532,9 +668,27 @@ def _apply_anomaly_volatility(step_vol: float, snap: dict) -> float:
     return step_vol
 
 
-def _apply_regime(regime: str | None, atr: float, drift: float) -> tuple[float, float]:
-    """레짐별 스텝 변동성과 드리프트 조정."""
-    if regime == "TRENDING_UP" or regime == "TRENDING_DOWN":
+def _apply_regime(
+    regime: str | None, atr: float, drift: float,
+    regime_scores: dict | None = None,
+) -> tuple[float, float]:
+    """레짐별 스텝 변동성과 드리프트 조정.
+
+    A5: regime_scores가 있으면 소프트 스코어 기반 연속 보간.
+    {"trending": 0.6, "volatile": 0.2, "ranging": 0.2} 형태.
+    """
+    if regime_scores and sum(regime_scores.values()) > 0:
+        # 소프트 스코어 기반: 각 레짐의 변동성/드리프트 배율을 가중 평균
+        t = regime_scores.get("trending", 0.0)
+        v = regime_scores.get("volatile", 0.0)
+        r = regime_scores.get("ranging", 0.0)
+
+        # 변동성: trending=0.6, ranging=0.8, volatile=1.2 의 가중 평균
+        step_vol = atr * (t * 0.6 + r * 0.8 + v * 1.2)
+        # 드리프트 배율: trending=1.3, ranging=0.5, volatile=1.0 의 가중 평균
+        drift_mult = t * 1.3 + r * 0.5 + v * 1.0
+        drift *= drift_mult
+    elif regime == "TRENDING_UP" or regime == "TRENDING_DOWN":
         step_vol = atr * 0.6
         drift *= 1.3
     elif regime == "RANGING":

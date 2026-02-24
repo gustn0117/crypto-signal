@@ -69,7 +69,7 @@ from analysis.market_context import build_market_context
 from db import Database, CandleRepo, SignalRepo, SignalTrackRepo, PredictionRepo, AlertRepo
 from db.paper_trading_repo import PaperTradingRepo
 from data_collector import DataCollector
-from analysis.prediction import generate_prediction
+from analysis.prediction import generate_prediction, recalculate_remaining_path
 from analysis.self_learning import SelfLearningEngine
 from analysis.backtest import BacktestEngine
 from analysis.correlation import CorrelationAnalyzer
@@ -568,6 +568,28 @@ async def update_prediction_progress():
                     closest = min(predicted_path, key=lambda p: abs(p["time"] - now_ts))
                     error = abs(current_price - closest["price"])
                     path_accuracy = max(0.0, 1.0 - error / (2.0 * atr))
+
+                # C3: 실시간 경로 재계산 (현재가 기반)
+                predicted_path = pred.get("predicted_path", [])
+                upper_path = pred.get("upper_bound_path", [])
+                lower_path = pred.get("lower_bound_path", [])
+                if predicted_path and atr > 0:
+                    updated_paths = recalculate_remaining_path(
+                        predicted_path=predicted_path,
+                        upper_bound_path=upper_path,
+                        lower_bound_path=lower_path,
+                        current_price=current_price,
+                        current_time=int(now.timestamp()),
+                        atr=atr,
+                    )
+                    # 경로가 실제로 변경된 경우에만 DB 업데이트
+                    if updated_paths["predicted_path"] is not predicted_path:
+                        await prediction_repo.update_paths(
+                            pred["id"],
+                            updated_paths["predicted_path"],
+                            updated_paths["upper_bound_path"],
+                            updated_paths["lower_bound_path"],
+                        )
 
                 await prediction_repo.update_progress(
                     pred["id"], round(pnl_pct, 4), round(rr_current, 4),

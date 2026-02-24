@@ -46,9 +46,10 @@ class BacktestEngine:
 
         try:
             # 전체 검증된 예측 조회 (제한 없음 - 대용량 활용)
+            # C5: actual_pnl_pct 필드 추가 (실제 PnL 기반 통계)
             resp = (
                 await self._table("predictions")
-                .select("symbol,timeframe,signal_direction,confidence,result,regime,created_at")
+                .select("symbol,timeframe,signal_direction,confidence,result,regime,created_at,progress_pnl_pct,entry_price,atr")
                 .eq("status", "VERIFIED")
                 .order("created_at", desc=True)
                 .limit(10000)
@@ -188,15 +189,21 @@ class BacktestEngine:
         if not predictions:
             return {}
 
-        # PnL 추정: result 기반 수익률 추정 (실제 PnL 데이터가 없으므로)
+        # C5: 실제 PnL 우선 사용, 없으면 result 기반 추정치 폴백
         result_pnl_map = {
             "HIT_TP3": 0.06, "HIT_TP2": 0.04, "HIT_TP1": 0.02,
             "PARTIAL": 0.005, "WRONG": -0.015, "HIT_SL": -0.02,
         }
         pnl_list = []
+        actual_count = 0
         for p in predictions:
-            result = p.get("result", "WRONG")
-            pnl_list.append(result_pnl_map.get(result, 0.0))
+            actual_pnl = p.get("progress_pnl_pct")
+            if actual_pnl is not None and actual_pnl != 0:
+                pnl_list.append(actual_pnl / 100.0)  # % → 소수
+                actual_count += 1
+            else:
+                result = p.get("result", "WRONG")
+                pnl_list.append(result_pnl_map.get(result, 0.0))
 
         if not pnl_list:
             return {}
@@ -280,6 +287,9 @@ class BacktestEngine:
             "max_consecutive_wins": max_consecutive_wins,
             "max_consecutive_losses": max_consecutive_losses,
             "equity_curve": equity_curve[-100:],
+            # C5: 실제 PnL 커버리지 정보
+            "actual_pnl_count": actual_count,
+            "actual_pnl_coverage": round(actual_count / len(pnl_list), 4) if pnl_list else 0,
         }
 
     def get_signal_win_rate(self, signal_direction: str, confidence: float = 0.0) -> Optional[dict]:

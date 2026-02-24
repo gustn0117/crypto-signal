@@ -30,7 +30,7 @@ from .indicators import (
     TF_CATEGORY,
 )
 from .candle_patterns import analyze_candle_patterns, CandlePatternResult
-from .chart_patterns import analyze_chart_patterns, ChartPatternResult
+from .chart_patterns import analyze_chart_patterns, ChartPatternResult, set_chart_pattern_regime
 from .volume import analyze_volume, VolumeResult
 from .levels import calculate_levels, PriceLevels
 from .trade_params import calculate_trade_params, TradeParams
@@ -127,7 +127,7 @@ class TradeSignal:
 class SignalEngine:
     """
     복합 전략 시그널 엔진
-    12개 기술 지표 + 캔들 패턴 + 차트 패턴 + 거래량 + 선물 데이터를 종합
+    16개 기술 지표 + 캔들 패턴 + 차트 패턴 + 거래량 + 선물 데이터를 종합
     """
 
     DEFAULT_WEIGHTS = {
@@ -137,6 +137,17 @@ class SignalEngine:
         "volume": 0.15,
         "futures_data": 0.18,
     }
+
+    # A2: 지표 상관관계 그룹 — 그룹 내 중복 제거
+    # 같은 그룹의 지표들은 그룹별 대표 점수(가장 강한 시그널)로 통합
+    INDICATOR_GROUPS = {
+        "momentum":    {"RSI", "Stochastic", "Williams %R", "CCI"},
+        "trend":       {"MACD", "EMA", "ADX", "Ichimoku", "MA50/200", "Vortex"},
+        "volume_flow": {"MFI", "CMF", "VWAP", "EOM", "KVO"},
+        "volatility":  {"Bollinger Bands"},
+    }
+    # 그룹별 가중치 (합 = 1.0)
+    GROUP_WEIGHTS = {"momentum": 0.30, "trend": 0.35, "volume_flow": 0.20, "volatility": 0.15}
 
     # 레짐별 카테고리 가중치 배율
     REGIME_WEIGHT_MODIFIERS = {
@@ -205,7 +216,11 @@ class SignalEngine:
         # 2) 캔들 패턴 분석
         candle_results: List[CandlePatternResult] = analyze_candle_patterns(df)
 
-        # 3) 차트 패턴 분석
+        # 2.5) 레짐 조기 감지 (B6: 차트 패턴 R² 적응형 임계값에 필요)
+        regime = detect_regime(df)
+        set_chart_pattern_regime(regime.regime)
+
+        # 3) 차트 패턴 분석 (B6: 레짐 적응형 R² 임계값 적용)
         chart_results: List[ChartPatternResult] = analyze_chart_patterns(df)
 
         # 4) 거래량 분석
@@ -214,10 +229,8 @@ class SignalEngine:
         # 5) 선물 데이터 (외부에서 전달)
         futures_results = futures_data or []
 
-        # 6) 점수 계산
-        indicator_score = self._calc_category_score(
-            [(r.signal, r.strength) for r in indicator_results]
-        )
+        # 6) 점수 계산 (A2: 지표는 상관관계 그룹별 중복 제거 후 계산)
+        indicator_score = self._calc_grouped_indicator_score(indicator_results)
         candle_score = self._calc_category_score(
             [(r.signal, r.strength) for r in candle_results]
         ) if candle_results else 0.0
@@ -231,8 +244,7 @@ class SignalEngine:
             [(r.signal, r.strength) for r in futures_results]
         ) if futures_results else 0.0
 
-        # 7) 레짐 감지 + 가중 합산
-        regime = detect_regime(df)
+        # 7) 가중 합산 (레짐은 step 2.5에서 이미 감지됨)
         w = self._get_regime_adjusted_weights(regime.regime)
         total_score = (
             indicator_score * w.get("indicators", 0.30)
@@ -304,6 +316,8 @@ class SignalEngine:
             "total": round(total_score, 4),
         }
         indicator_snapshot["regime"] = regime.regime
+        # A5: 레짐 소프트 스코어를 스냅샷에 전달 (prediction.py에서 연속 보간에 활용)
+        indicator_snapshot["regime_scores"] = regime.scores
         indicator_snapshot["confluence_bonus"] = round(confluence_bonus, 4)
         if mtf_result:
             indicator_snapshot["mtf_agreement"] = mtf_result.alignment == "aligned"
@@ -357,34 +371,60 @@ class SignalEngine:
         )
 
     def _apply_market_context(self, signal: str, confidence: float) -> float:
-        """시장 맥락 보정 (알트코인에만 적용)"""
+        """시장 맥락 보정 (B3: 극단값 부스트 강화, 알트코인에만 적용)"""
         ctx = self._market_context
         if not ctx:
             return confidence
 
         modifier = 0.0
 
-        # Fear & Greed 보정
+        # Fear & Greed 보정 (B3: 극단값 ±0.05 → ±0.15 강화)
         fg = ctx.get("fear_greed")
         if fg is not None:
-            if fg <= 20:  # Extreme Fear → 롱 편향
+            if fg <= 10:  # 극극도 공포
+                if "LONG" in signal:
+                    modifier += 0.15
+                elif "SHORT" in signal:
+                    modifier -= 0.08
+            elif fg <= 20:  # 극도 공포
+                if "LONG" in signal:
+                    modifier += 0.10
+                elif "SHORT" in signal:
+                    modifier -= 0.05
+            elif fg <= 30:  # 공포
                 if "LONG" in signal:
                     modifier += 0.05
-                elif "SHORT" in signal:
-                    modifier -= 0.03
-            elif fg >= 80:  # Extreme Greed → 숏 편향
+            elif fg >= 90:  # 극극도 탐욕
+                if "SHORT" in signal:
+                    modifier += 0.15
+                elif "LONG" in signal:
+                    modifier -= 0.08
+            elif fg >= 80:  # 극도 탐욕
+                if "SHORT" in signal:
+                    modifier += 0.10
+                elif "LONG" in signal:
+                    modifier -= 0.05
+            elif fg >= 70:  # 탐욕
                 if "SHORT" in signal:
                     modifier += 0.05
-                elif "LONG" in signal:
-                    modifier -= 0.03
 
         # 시장 모멘텀 보정
         momentum = ctx.get("market_momentum")
         if momentum is not None:
-            if momentum >= 0.8:  # 과열 → 숏 편향
+            if momentum >= 0.85:  # 극단 과열
+                if "SHORT" in signal:
+                    modifier += 0.05
+                elif "LONG" in signal:
+                    modifier -= 0.03
+            elif momentum >= 0.7:
                 if "SHORT" in signal:
                     modifier += 0.03
-            elif momentum <= 0.2:  # 과매도 → 롱 편향
+            elif momentum <= 0.15:  # 극단 과매도
+                if "LONG" in signal:
+                    modifier += 0.05
+                elif "SHORT" in signal:
+                    modifier -= 0.03
+            elif momentum <= 0.3:
                 if "LONG" in signal:
                     modifier += 0.03
 
@@ -465,10 +505,10 @@ class SignalEngine:
                 "price_change_pct": round(price_change, 4),
             }
 
-        # 3) 패턴 매칭 (데이터 충분할 때만)
+        # 3) 패턴 매칭 (A3: 매 스캔 시 DB 부족하면 자동 빌드, 조건 완화)
         if signal != "NEUTRAL" and len(df) >= 60:
             close_list = df["close"].tolist()
-            if len(self._pattern_matcher._pattern_db) < 100 and len(close_list) >= 200:
+            if len(self._pattern_matcher._pattern_db) < 500 and len(close_list) >= 100:
                 self._pattern_matcher.build_from_candles(close_list)
             pattern_result = self._pattern_matcher.find_similar(close_list)
             pat_mod = self._pattern_matcher.get_confidence_modifier(pattern_result, signal)
@@ -667,11 +707,67 @@ class SignalEngine:
             adjusted = {k: v / total for k, v in adjusted.items()}
         return adjusted
 
+    def _calc_grouped_indicator_score(self, indicator_results: List[IndicatorResult]) -> float:
+        """A2: 상관관계 그룹별 중복 제거 후 지표 점수 계산.
+
+        같은 그룹(momentum/trend/volume_flow/volatility) 내에서는
+        가장 강한 시그널만 대표로 사용하여 상관된 지표의 과잉 증폭을 방지.
+        """
+        # 그룹별로 지표 분류
+        group_signals: dict[str, list[tuple[str, float]]] = {g: [] for g in self.INDICATOR_GROUPS}
+        ungrouped: list[tuple[str, float]] = []
+
+        name_to_group = {}
+        for group_name, members in self.INDICATOR_GROUPS.items():
+            for m in members:
+                name_to_group[m] = group_name
+
+        for r in indicator_results:
+            group = name_to_group.get(r.name)
+            if group:
+                group_signals[group].append((r.signal, r.strength))
+            else:
+                ungrouped.append((r.signal, r.strength))
+
+        # 그룹별 대표 점수: 그룹 내 가장 강한 시그널의 방향과 세기
+        total_score = 0.0
+        total_weight = 0.0
+
+        for group_name, signals in group_signals.items():
+            if not signals:
+                continue
+            gw = self.GROUP_WEIGHTS.get(group_name, 0.25)
+            # 그룹 내 long/short 점수 합산 후 평균 → 방향성
+            g_score = 0.0
+            for sig, strength in signals:
+                if sig == "long":
+                    g_score += strength
+                elif sig == "short":
+                    g_score -= strength
+            g_score /= len(signals)
+            g_score = max(-1.0, min(1.0, g_score))
+            total_score += g_score * gw
+            total_weight += gw
+
+        # 미분류 지표는 개별 처리
+        if ungrouped:
+            ug_score = 0.0
+            for sig, strength in ungrouped:
+                if sig == "long":
+                    ug_score += strength
+                elif sig == "short":
+                    ug_score -= strength
+            ug_score /= len(ungrouped)
+            ug_weight = max(0.0, 1.0 - total_weight)
+            total_score += ug_score * ug_weight
+
+        return max(-1.0, min(1.0, total_score))
+
     def _detect_confluence(self, indicator_results: List[IndicatorResult]) -> float:
         """
-        지표 합류(Confluence) 감지 — 확장 버전.
+        지표 합류(Confluence) 감지 — B5 확장 버전.
         여러 지표 조합이 같은 방향을 가리킬 때 신뢰도 보너스.
-        최대 +0.15.
+        최대 +0.20 (기존 0.15에서 확대).
         """
         bonus = 0.0
         by_name = {r.name: r for r in indicator_results}
@@ -719,7 +815,38 @@ class SignalEngine:
                     and cmf.strength >= 0.5):
                 bonus += 0.02
 
-        return min(bonus, 0.15)
+        # B5: 추가 합류 조합들
+
+        # 6) Ichimoku + EMA + MACD 3중 추세 합류 → +0.03
+        ichi = by_name.get("Ichimoku")
+        ema = by_name.get("EMA")
+        macd = by_name.get("MACD")
+        if ichi and ema and macd:
+            if (ichi.signal == ema.signal == macd.signal
+                    and ichi.signal != "neutral"
+                    and all(r.strength >= 0.4 for r in (ichi, ema, macd))):
+                bonus += 0.03
+
+        # 7) Williams %R + CCI 과매수/과매도 합류 → +0.02
+        wr = by_name.get("Williams %R")
+        cci = by_name.get("CCI")
+        if wr and cci:
+            if (wr.signal == cci.signal
+                    and wr.signal != "neutral"
+                    and wr.strength >= 0.5
+                    and cci.strength >= 0.5):
+                bonus += 0.02
+
+        # 8) Vortex + ADX 추세 확인 합류 → +0.02
+        vortex = by_name.get("Vortex")
+        if vortex and adx:
+            if (vortex.signal == adx.signal
+                    and vortex.signal != "neutral"
+                    and vortex.strength >= 0.5
+                    and adx.strength >= 0.5):
+                bonus += 0.02
+
+        return min(bonus, 0.20)
 
     def _scalp_volume_filter(self, df: pd.DataFrame, timeframe: str, confidence: float) -> float:
         """

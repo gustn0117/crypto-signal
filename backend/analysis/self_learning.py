@@ -1,7 +1,9 @@
 """
-자기학습 엔진 v2 - 과거 시그널/예측 결과를 분석하여 지표별 정확도 계산 및 가중치 자동 조정
+자기학습 엔진 v3 - 과거 시그널/예측 결과를 분석하여 지표별 정확도 계산 및 가중치 자동 조정
 
-v2 개선:
+v3 개선 (B1 + B2):
+- B1: 시그널 정확도 추적 (signal_accuracy 테이블 + 시그널-결과 피드백 루프)
+- B2: EMA 기반 증분 학습 (검증 시 즉시 가중치 미세조정, 6h 배치와 병행)
 - 시간 감쇠 가중치: 최근 예측일수록 더 높은 가중치 (반감기 30일)
 - 레짐별 정확도 추적: TRENDING_UP/DOWN, RANGING, VOLATILE별 분리 통계
 - 결과 등급별 점수: HIT_TP3=1.0, HIT_TP2=0.8, HIT_TP1=0.6, PARTIAL=0.4
@@ -11,6 +13,7 @@ v2 개선:
 2. 각 지표가 올바른 방향을 가리켰는지 채점 (시간 감쇠 + 레짐별)
 3. 지표별/카테고리별 정확도 계산
 4. 정확도 기반 적응형 가중치 생성
+5. B2: 개별 검증 시 EMA로 즉시 가중치 업데이트
 """
 import logging
 import math
@@ -28,8 +31,8 @@ DEFAULT_WEIGHTS = {
     "futures_data": 0.18,
 }
 
-# 최소 샘플 수: 이 이상 모여야 학습 시작
-MIN_SAMPLES = 10
+# 최소 샘플 수: 이 이상 모여야 학습 시작 (B1: 20으로 상향)
+MIN_SAMPLES = 20
 
 # 대용량 데이터 활용: 제한 확대
 MAX_PREDICTIONS = 5000
@@ -420,3 +423,81 @@ class SelfLearningEngine:
             }).execute()
         except Exception as e:
             logger.error("[자기학습] 가중치 저장 실패: %s", e)
+
+    # ─── B1: 시그널 정확도 추적 ──────────────────────────────
+    async def track_signal_accuracy(self, prediction: dict, result: str):
+        """B1: 개별 예측 검증 시 시그널 정확도를 추적.
+
+        signal_accuracy 테이블에 시그널 유형별/심볼별 정확도 기록.
+        """
+        try:
+            is_success = result in SUCCESS_RESULTS
+            result_score = RESULT_SCORES.get(result, 0.0)
+            row = {
+                "symbol": prediction.get("symbol", ""),
+                "timeframe": prediction.get("timeframe", ""),
+                "signal_direction": prediction.get("signal_direction", ""),
+                "result": result,
+                "result_score": result_score,
+                "is_success": is_success,
+                "confidence": prediction.get("confidence", 0.0),
+                "regime": prediction.get("regime", "UNKNOWN"),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await self._table("signal_accuracy").insert(row).execute()
+        except Exception as e:
+            logger.debug("[자기학습] 시그널 정확도 추적 실패: %s", e)
+
+    # ─── B2: EMA 증분 학습 ──────────────────────────────────
+    # EMA 계수: 0.05 = 최근 검증 결과가 가중치에 5% 반영
+    EMA_ALPHA = 0.05
+
+    async def incremental_update(self, prediction: dict, result: str):
+        """B2: 개별 예측 검증 시 EMA로 가중치를 즉시 미세조정.
+
+        6시간 배치 학습(run_learning_cycle)과 병행하여
+        검증이 발생할 때마다 실시간으로 가중치를 업데이트.
+        """
+        if result not in SUCCESS_RESULTS and result not in FAILURE_RESULTS:
+            return
+
+        # B1: 정확도 추적
+        await self.track_signal_accuracy(prediction, result)
+
+        # 현재 가중치 가져오기
+        current = await self.get_adaptive_weights()
+
+        is_success = result in SUCCESS_RESULTS
+        result_score = RESULT_SCORES.get(result, 0.0)
+        regime = prediction.get("regime", "UNKNOWN") or "UNKNOWN"
+
+        # 결과 기반으로 카테고리별 EMA 업데이트
+        # 성공 시: 현재 시그널 방향에 기여한 카테고리 가중치 증가
+        # 실패 시: 기여 카테고리 가중치 감소
+        direction = prediction.get("signal_direction", "NEUTRAL")
+        if direction == "NEUTRAL":
+            return
+
+        # 단순화된 EMA: 성공률 기반 가중치 조정
+        alpha = self.EMA_ALPHA
+        target = {}
+        for cat, w in current.items():
+            if is_success:
+                # 성공: 가중치를 result_score 비율만큼 상향
+                target[cat] = w * (1.0 + alpha * (result_score - 0.5))
+            else:
+                # 실패: 가중치를 약간 하향
+                target[cat] = w * (1.0 - alpha * 0.3)
+
+        # 정규화
+        total = sum(target.values())
+        if total > 0:
+            target = {k: v / total for k, v in target.items()}
+        else:
+            return
+
+        self._cached_weights = target
+        logger.debug(
+            "[자기학습] EMA 증분 업데이트: %s (%s, score=%.1f)",
+            {k: round(v, 3) for k, v in target.items()}, result, result_score,
+        )

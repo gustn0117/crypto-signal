@@ -94,9 +94,9 @@ class LSTMPredictor:
         방향 예측: up/down/flat 확률 반환.
         가중치 미로드 시 간이 통계 기반 예측.
         """
-        # 간이 모드 (가중치 없을 때): 최근 모멘텀 기반
+        # 간이 모드 (가중치 없을 때): A4 중복 제거된 폴백
         if not self._loaded:
-            return self._simple_predict(close_prices, rsi_values)
+            return self._simple_predict(close_prices, volumes, bb_positions, atr_ratios)
 
         # LSTM 추론 (가중치 있을 때)
         x = self._prepare_features(
@@ -116,38 +116,70 @@ class LSTMPredictor:
             }
         except Exception as e:
             logger.error("LSTM 추론 실패: %s", e)
-            return self._simple_predict(close_prices, rsi_values)
+            return self._simple_predict(close_prices, volumes, bb_positions, atr_ratios)
 
-    def _simple_predict(self, close_prices: list[float], rsi_values: list[float]) -> dict:
-        """간이 통계 기반 예측 (LSTM 미사용 시 폴백)."""
+    def _simple_predict(
+        self,
+        close_prices: list[float],
+        volumes: list[float],
+        bb_positions: list[float],
+        atr_ratios: list[float],
+    ) -> dict:
+        """A4: 중복 제거된 간이 예측 (RSI/momentum 제거 → BB/거래량/변동성 추세 활용).
+
+        signal_engine이 이미 RSI, MACD, 모멘텀을 분석하므로
+        여기서는 다른 차원의 정보만 사용:
+        - BB 위치 추세 (밴드 내 위치 변화)
+        - 거래량 추세 (증가/감소)
+        - ATR 추세 (변동성 확장/수축)
+        """
         if len(close_prices) < 20:
             return {"up": 0.33, "down": 0.33, "flat": 0.34, "confidence": 0.0}
-
-        # 최근 모멘텀
-        recent = close_prices[-10:]
-        momentum = (recent[-1] - recent[0]) / recent[0] * 100
-
-        # RSI 기반
-        rsi = rsi_values[-1] if rsi_values else 50.0
 
         up_prob = 0.33
         down_prob = 0.33
 
-        # 모멘텀 반영
-        if momentum > 1.0:
-            up_prob += 0.15
-            down_prob -= 0.10
-        elif momentum < -1.0:
-            down_prob += 0.15
-            up_prob -= 0.10
+        # 1) BB 위치 추세: 최근 5봉의 BB position 변화
+        if len(bb_positions) >= 10:
+            bb_recent = bb_positions[-5:]
+            bb_prev = bb_positions[-10:-5]
+            bb_trend = (sum(bb_recent) / len(bb_recent)) - (sum(bb_prev) / len(bb_prev))
+            if bb_trend > 0.15:
+                up_prob += 0.10
+                down_prob -= 0.05
+            elif bb_trend < -0.15:
+                down_prob += 0.10
+                up_prob -= 0.05
+            # 극단적 BB 위치 + 방향 전환
+            bb_last = bb_positions[-1] if bb_positions else 0.5
+            if bb_last < 0.1 and bb_trend > 0:
+                up_prob += 0.05  # 바닥에서 반등
+            elif bb_last > 0.9 and bb_trend < 0:
+                down_prob += 0.05  # 천장에서 하락
 
-        # RSI 반영
-        if rsi < 30:
-            up_prob += 0.10
-        elif rsi > 70:
-            down_prob += 0.10
+        # 2) 거래량 추세: 최근 5봉 vs 이전 10봉
+        if len(volumes) >= 15:
+            vol_recent = sum(volumes[-5:]) / 5
+            vol_prev = sum(volumes[-15:-5]) / 10
+            vol_change = (vol_recent - vol_prev) / (vol_prev + 1e-10)
+            # 거래량 급등 + 가격 상승 = 강한 매수세
+            if len(close_prices) >= 5:
+                price_dir = close_prices[-1] - close_prices[-5]
+                if vol_change > 0.5 and price_dir > 0:
+                    up_prob += 0.08
+                elif vol_change > 0.5 and price_dir < 0:
+                    down_prob += 0.08
 
-        flat_prob = max(0.0, 1.0 - up_prob - down_prob)
+        # 3) ATR 추세: 변동성 확장/수축
+        if len(atr_ratios) >= 10:
+            atr_recent = sum(atr_ratios[-3:]) / 3
+            atr_prev = sum(atr_ratios[-10:-3]) / 7
+            if atr_recent > atr_prev * 1.3:
+                # 변동성 확장 = flat 감소, 방향성 증가
+                up_prob *= 1.05
+                down_prob *= 1.05
+
+        flat_prob = max(0.05, 1.0 - up_prob - down_prob)
         total = up_prob + down_prob + flat_prob
         up_prob /= total
         down_prob /= total

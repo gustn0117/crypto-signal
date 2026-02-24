@@ -1,6 +1,7 @@
 """
 패턴 클러스터링 모듈
-최근 가격 패턴과 과거 유사 패턴을 비교하여 방향 예측
+최근 가격 패턴과 과거 유사 패턴을 비교하여 방향 예측.
+C2 개선: DTW(Dynamic Time Warping) 거리 + Z-score 정규화
 """
 import logging
 from dataclasses import dataclass
@@ -44,23 +45,55 @@ class PatternMatcher:
         self._max_patterns = 5000
 
     def _normalize_pattern(self, prices: list[float]) -> Optional[np.ndarray]:
-        """가격 시계열을 정규화 (0~1 스케일링)."""
+        """Z-score 정규화 (C2: min-max 대신 Z-score로 스케일 불변)."""
         if len(prices) < self.pattern_length:
             return None
         segment = np.array(prices[-self.pattern_length:], dtype=float)
-        mn, mx = segment.min(), segment.max()
-        if mx - mn < 1e-10:
+        std = segment.std()
+        if std < 1e-10:
             return None
-        return (segment - mn) / (mx - mn)
+        return (segment - segment.mean()) / std
 
     def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """코사인 유사도 계산."""
+        """코사인 유사도 계산 (빠른 사전 필터용)."""
         dot = np.dot(a, b)
         norm_a = np.linalg.norm(a)
         norm_b = np.linalg.norm(b)
         if norm_a < 1e-10 or norm_b < 1e-10:
             return 0.0
         return float(dot / (norm_a * norm_b))
+
+    def _dtw_distance(self, a: np.ndarray, b: np.ndarray) -> float:
+        """
+        C2: DTW(Dynamic Time Warping) 거리 계산.
+        시간축 왜곡에 강건한 패턴 비교.
+        Sakoe-Chiba band(window=3)로 속도 최적화.
+        """
+        n = len(a)
+        m = len(b)
+        window = min(3, max(n, m))  # Sakoe-Chiba band
+
+        dtw = np.full((n + 1, m + 1), np.inf)
+        dtw[0, 0] = 0.0
+
+        for i in range(1, n + 1):
+            j_start = max(1, i - window)
+            j_end = min(m, i + window)
+            for j in range(j_start, j_end + 1):
+                cost = (a[i - 1] - b[j - 1]) ** 2
+                dtw[i, j] = cost + min(dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1])
+
+        dist = float(np.sqrt(dtw[n, m]))
+        return dist
+
+    def _dtw_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """DTW 거리를 0~1 유사도로 변환."""
+        dist = self._dtw_distance(a, b)
+        # Z-score 정규화된 패턴의 DTW 거리를 유사도로 변환
+        # 최대 거리 = sqrt(pattern_length) * 4 정도 (z-score 범위 고려)
+        max_dist = np.sqrt(self.pattern_length) * 4.0
+        similarity = max(0.0, 1.0 - dist / max_dist)
+        return similarity
 
     def add_pattern(self, prices: list[float], outcome_pct: float, symbol: str = ""):
         """과거 패턴을 DB에 추가."""
@@ -95,6 +128,7 @@ class PatternMatcher:
     def find_similar(self, current_prices: list[float], top_k: int = 50) -> Optional[PatternResult]:
         """
         현재 패턴과 유사한 과거 패턴을 찾아 방향 예측.
+        C2: 2단계 필터링 — 코사인 사전필터(빠름) → DTW 정밀 비교(정확).
         """
         if not self._pattern_db:
             return None
@@ -103,14 +137,25 @@ class PatternMatcher:
         if current is None:
             return None
 
-        # 유사도 계산
-        matches: list[PatternMatch] = []
+        # 1단계: 코사인 유사도로 후보 사전 필터 (상위 200개)
+        cosine_pre = self.min_similarity - 0.10  # 여유 있게 필터
+        candidates = []
         for entry in self._pattern_db:
-            sim = self._cosine_similarity(current, entry["pattern"])
-            if sim >= self.min_similarity:
+            cos_sim = self._cosine_similarity(current, entry["pattern"])
+            if cos_sim >= cosine_pre:
+                candidates.append((cos_sim, entry))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        candidates = candidates[:200]
+
+        # 2단계: DTW 유사도로 정밀 비교
+        matches: list[PatternMatch] = []
+        for _cos_sim, entry in candidates:
+            dtw_sim = self._dtw_similarity(current, entry["pattern"])
+            if dtw_sim >= self.min_similarity:
                 direction = "up" if entry["outcome"] > 0.5 else "down" if entry["outcome"] < -0.5 else "flat"
                 matches.append(PatternMatch(
-                    similarity=sim,
+                    similarity=dtw_sim,
                     direction=direction,
                     outcome_pct=entry["outcome"],
                 ))

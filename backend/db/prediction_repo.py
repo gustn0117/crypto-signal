@@ -243,6 +243,25 @@ class PredictionRepo:
             .execute()
         )
 
+    async def update_paths(
+        self,
+        prediction_id: int,
+        predicted_path: list[dict],
+        upper_bound_path: list[dict],
+        lower_bound_path: list[dict],
+    ) -> None:
+        """C3: 실시간 재계산된 예측 경로 업데이트."""
+        await (
+            self._table()
+            .update({
+                "predicted_path": predicted_path,
+                "upper_bound_path": upper_bound_path,
+                "lower_bound_path": lower_bound_path,
+            })
+            .eq("id", prediction_id)
+            .execute()
+        )
+
     async def expire_prediction(self, prediction_id: int) -> bool:
         """활성 예측을 수동 만료(초기화) 처리."""
         resp = await (
