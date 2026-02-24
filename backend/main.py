@@ -55,7 +55,7 @@ from config import (
     ALERT_ENABLED, ALERT_MIN_CONFIDENCE, ALERT_SIGNAL_TYPES, ALERT_COOLDOWN_MINUTES,
     ALERT_COOLDOWN_MAP, DEFAULT_HORIZON_CANDLES,
     ANALYSIS_CANDLE_LIMIT, REALTIME_CANDLE_LIMIT, REALTIME_HIGHER_TF_LIMIT,
-    SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES, SCALP_SYMBOLS_LIMIT,
+    SUPABASE_URL, SUPABASE_KEY, SUPABASE_SCHEMA, SCAN_SYMBOLS, SCAN_TIMEFRAMES, SCALP_SYMBOLS_LIMIT,
     BACKFILL_DAYS, BACKFILL_DAYS_1M, BACKFILL_TIMEFRAMES, BACKFILL_BATCH_SIZE, BACKFILL_CONCURRENCY,
     CRYPTOPANIC_API_KEY,
     AUTO_TRADE_ENABLED, AUTO_TRADE_MAX_POSITIONS, AUTO_TRADE_MAX_PCT,
@@ -995,8 +995,26 @@ async def lifespan(app: FastAPI):
     # 서버 시작 시간 갱신 (리로더가 아닌 실제 워커 시작 시점)
     _server_started_at = datetime.now(timezone.utc).isoformat()
 
-    # DB 초기화
+    # DB 초기화 + 스키마 자동 등록 (PostgREST 재시작 시 스키마 누락 방지)
     await database.connect()
+    try:
+        import httpx as _hx
+        _pg_meta = SUPABASE_URL.rstrip("/") + "/pg/query"
+        _auth_h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
+        async with _hx.AsyncClient(timeout=10) as _hc:
+            r = await _hc.post(_pg_meta, headers=_auth_h, json={
+                "query": "SELECT string_agg(unnest, ', ') AS schemas FROM unnest(string_to_array((SELECT setting FROM pg_settings WHERE name='pgrst.db_schemas'), ', '));"
+            })
+            current = (r.json()[0]["schemas"] or "") if r.status_code == 200 and r.json() else ""
+            if SUPABASE_SCHEMA not in current:
+                new_schemas = f"{current}, {SUPABASE_SCHEMA}" if current else SUPABASE_SCHEMA
+                await _hc.post(_pg_meta, headers=_auth_h, json={
+                    "query": f"ALTER ROLE authenticator SET pgrst.db_schemas = '{new_schemas}';"
+                })
+                await _hc.post(_pg_meta, headers=_auth_h, json={"query": "NOTIFY pgrst, 'reload config';"})
+                logger.info("PostgREST에 스키마 '%s' 자동 등록 완료", SUPABASE_SCHEMA)
+    except Exception as e:
+        logger.debug("PostgREST 스키마 자동 등록 시도 실패 (무시 가능): %s", e)
     candle_repo = CandleRepo(database.client, SUPABASE_SCHEMA)
     signal_repo = SignalRepo(database.client, SUPABASE_SCHEMA)
     track_repo = SignalTrackRepo(database.client, SUPABASE_SCHEMA)
@@ -1149,50 +1167,22 @@ async def health_check():
 
 @app.get("/api/deploy-status")
 async def deploy_status():
-    """배포 웹훅 상태 + 프론트엔드 연결 테스트 (디버깅용)"""
-    result = {}
+    """배포 상태 진단"""
     import httpx
-    # 1) Webhook status (via Docker host gateway)
+    result = {"server_started_at": _server_started_at}
     try:
         async with httpx.AsyncClient(timeout=5) as hc:
-            for host in ["172.17.0.1", "host.docker.internal", "localhost"]:
-                try:
-                    resp = await hc.get(f"http://{host}:9000/status")
-                    if resp.status_code == 200:
-                        result["webhook_status"] = resp.json()
-                        result["webhook_host"] = host
-                        break
-                except Exception:
-                    continue
-    except Exception as e:
-        result["webhook_error"] = str(e)
-    # 2) Frontend connectivity test (same docker network)
-    frontend_tests = {}
-    async with httpx.AsyncClient(timeout=5) as hc:
-        for url in [
-            "http://coin-frontend:3000/",
-            "http://frontend:3000/",
-            "http://172.17.0.1:3001/",
-            "http://localhost:3001/",
-        ]:
-            try:
-                resp = await hc.get(url)
-                frontend_tests[url] = {"status": resp.status_code, "length": len(resp.text)}
-            except Exception as e:
-                frontend_tests[url] = {"error": str(e)}
-    result["frontend_tests"] = frontend_tests
-    # 3) Docker socket API (if available)
+            r = await hc.get("http://172.17.0.1:9000/status")
+            if r.status_code == 200:
+                result["webhook"] = r.json()
+    except Exception:
+        pass
     try:
-        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds="/var/run/docker.sock"), timeout=5) as hc:
-            resp = await hc.get("http://localhost/containers/json?all=true")
-            if resp.status_code == 200:
-                containers = resp.json()
-                result["containers"] = [
-                    {"name": c.get("Names", []), "state": c.get("State"), "status": c.get("Status"), "image": c.get("Image")}
-                    for c in containers
-                ]
+        async with httpx.AsyncClient(timeout=5) as hc:
+            r = await hc.get("http://coin-frontend:3000/")
+            result["frontend"] = {"status": r.status_code, "ok": r.status_code == 200}
     except Exception as e:
-        result["docker_socket"] = str(e)
+        result["frontend"] = {"ok": False, "error": str(e)}
     return result
 
 
